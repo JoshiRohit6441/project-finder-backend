@@ -18,16 +18,36 @@ if ! curl -fsS "$API/health" >/dev/null; then
   exit 1
 fi
 
-if [[ ! -d /usr/local/hestia ]] || ! command -v v-search-domain-owner >/dev/null; then
-  echo "This VPS uses Hestia. Do not install a second Nginx or edit /etc/nginx/sites-enabled." >&2
-  echo "Install Hestia, or set this domain in the panel first." >&2
+export PATH="/usr/local/hestia/bin:${PATH}"
+
+if [[ ! -d /usr/local/hestia ]]; then
+  echo "Hestia folder /usr/local/hestia not found." >&2
   exit 1
 fi
 
-OWNER="$(v-search-domain-owner "$DOMAIN" || true)"
+find_owner() {
+  local owner=""
+  if command -v v-search-domain-owner >/dev/null; then
+    owner="$(v-search-domain-owner "$DOMAIN" 2>/dev/null || true)"
+  fi
+  if [[ -n "${owner// }" ]]; then
+    printf '%s\n' "$owner"
+    return
+  fi
+  local dir
+  for dir in /home/*/conf/web/"$DOMAIN"; do
+    if [[ -d "$dir" ]]; then
+      basename "$(dirname "$(dirname "$(dirname "$dir")")")"
+      return
+    fi
+  done
+}
+
+OWNER="$(find_owner | head -n 1 | tr -d '[:space:]')"
 if [[ -z "${OWNER:-}" ]]; then
-  echo "Hestia has no web domain named $DOMAIN." >&2
-  echo "Add it in Hestia for one user, then re-run. Other sites stay untouched." >&2
+  echo "Hestia CLI was found, but no web domain named $DOMAIN." >&2
+  echo "In Hestia: Web -> Add Web Domain -> $DOMAIN  (user like dev). Then re-run." >&2
+  echo "Debug: ls /home/*/conf/web/ | grep ${DOMAIN}" >&2
   exit 1
 fi
 
