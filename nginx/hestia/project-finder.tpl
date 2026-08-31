@@ -15,12 +15,6 @@ server {
         return 404;
     }
 
-    location ^~ /.well-known/acme-challenge/ {
-        default_type "text/plain";
-        root %docroot%;
-        allow all;
-    }
-
     location / {
         proxy_pass         http://127.0.0.1:4000;
         proxy_http_version 1.1;
