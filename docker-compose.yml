@@ -100,6 +100,24 @@ services:
     networks:
       - app
 
+  mongo-express:
+    image: mongo-express:1.0.2
+    ports:
+      - "127.0.0.1:${MONGO_EXPRESS_PORT:-8082}:8081"
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://mongodb:27017/
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
+      ME_CONFIG_BASICAUTH: "true"
+      ME_CONFIG_BASICAUTH_USERNAME: ${MONGO_EXPRESS_USER:-root}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${MONGO_EXPRESS_PASSWORD:-root}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - app
+
   redis:
     image: redis:7-alpine
     command: redis-server --appendonly yes --save 60 1
