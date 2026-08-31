@@ -114,11 +114,9 @@ if ! v-list-web-domain "$OWNER" "$DOMAIN" | grep -qi 'PROXY'; then
   v-add-web-domain-proxy "$OWNER" "$DOMAIN" || true
 fi
 
-ACME_DIR="/home/${OWNER}/conf/web/${DOMAIN}"
 DOCROOT="/home/${OWNER}/web/${DOMAIN}/public_html"
-mkdir -p "$ACME_DIR" "${DOCROOT}/.well-known/acme-challenge"
-cp "$ROOT/nginx/hestia/nginx.conf_acme" "${ACME_DIR}/nginx.conf_acme"
-sed -i "s|/home/dev/web/docker-learning.plan-it.pro/public_html|${DOCROOT}|g" "${ACME_DIR}/nginx.conf_acme"
+mkdir -p "${DOCROOT}/.well-known/acme-challenge"
+rm -f "/home/${OWNER}/conf/web/${DOMAIN}/nginx.conf_acme" "/home/${OWNER}/conf/web/${DOMAIN}/nginx.ssl.conf_acme"
 chown -R "${OWNER}:${OWNER}" "${DOCROOT}/.well-known" || true
 
 echo "==> applying $TEMPLATE template to $DOMAIN only"
