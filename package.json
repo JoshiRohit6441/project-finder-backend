@@ -1,0 +1,36 @@
+{
+  "name": "project-finder-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "dev:worker": "nodemon src/worker.js",
+    "start": "node src/server.js",
+    "worker": "node src/worker.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@qdrant/js-client-rest": "^1.13.2",
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.1.0",
+    "googleapis": "^149.0.0",
+    "imapflow": "^1.0.188",
+    "ioredis": "^5.6.1",
+    "jsonwebtoken": "^9.0.2",
+    "mailparser": "^3.7.2",
+    "mongoose": "^8.15.1",
+    "nodemailer": "^7.0.3",
+    "pino": "^9.7.0",
+    "pino-pretty": "^13.0.0",
+    "zod": "^3.25.56"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  }
+}

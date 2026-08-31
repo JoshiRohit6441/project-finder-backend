@@ -1,0 +1,140 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-backend-env: &backend-env
+  NODE_ENV: production
+  HOST: 0.0.0.0
+  PORT: 4000
+  MONGO_URI: mongodb://mongodb:27017/projectfinder
+  REDIS_URL: redis://redis:6379
+  QDRANT_URL: http://qdrant:6333
+  FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+  PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:5173}
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: project-finder-api:prod
+    command: ["node", "src/server.js"]
+    env_file:
+      - .env
+    environment:
+      <<: *backend-env
+    ports:
+      - "4000:4000"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - app
+
+  ai-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: project-finder-api:prod
+    command: ["node", "src/worker.js"]
+    env_file:
+      - .env
+    environment:
+      <<: *backend-env
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - app
+
+  python-worker:
+    build:
+      context: ./python-worker
+      dockerfile: Dockerfile
+    image: project-finder-scraper:prod
+    env_file:
+      - .env
+    environment:
+      MONGO_URI: mongodb://mongodb:27017/projectfinder
+      REDIS_URL: redis://redis:6379
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - app
+
+  mongodb:
+    image: mongo:7
+    command: ["mongod", "--bind_ip_all"]
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - app
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --save 60 1
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - app
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.5
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - app
+
+volumes:
+  mongo_data:
+  redis_data:
+  qdrant_data:
+
+networks:
+  app:
+    driver: bridge

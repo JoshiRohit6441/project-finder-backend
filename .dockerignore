@@ -1,0 +1,13 @@
+node_modules
+npm-debug.log
+.env
+.env.*
+!.env.example
+python-worker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+*.md
+.git
+.gitignore
+src/scripts

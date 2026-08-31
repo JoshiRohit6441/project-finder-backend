@@ -1,0 +1,33 @@
+import { z } from "zod";
+
+const settingsSchema = z.object({
+  defaultAi: z.enum(["gemini", "openai"]),
+  geminiApiKey: z.string().optional().default(""),
+  geminiModel: z.string().min(1),
+  geminiEmbeddingModel: z.string().min(1),
+  openaiApiKey: z.string().optional().default(""),
+  openaiModel: z.string().min(1),
+  openaiEmbeddingModel: z.string().min(1),
+  googlePlacesApiKey: z.string().optional().default(""),
+  gmailUser: z.string().optional().default(""),
+  gmailAppPassword: z.string().optional().default(""),
+  gmailFromName: z.string().optional().default(""),
+  oauthClientId: z.string().optional().default(""),
+  oauthClientSecret: z.string().optional().default(""),
+  senderName: z.string().optional().default(""),
+  senderProfession: z.string().optional().default(""),
+  senderEmail: z.string().optional().default(""),
+  senderWhatsapp: z.string().optional().default(""),
+  outreachRequireApproval: z.boolean(),
+  createLeadsFromInbox: z.boolean().optional().default(false),
+  outreachDailyLimit: z.number().int().min(1).max(500),
+  outreachHourlyLimit: z.number().int().min(1).max(100),
+  salesContext: z.string().min(1).max(2000),
+  followUpMaxAttempts: z.number().int().min(0).max(10),
+  followUpIntervalDays: z.number().int().min(1).max(30),
+  followUpHoursStart: z.number().int().min(0).max(23),
+  followUpHoursEnd: z.number().int().min(1).max(24),
+  followUpHolidays: z.string().optional().default(""),
+});
+
+export { settingsSchema };
