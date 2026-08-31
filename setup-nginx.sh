@@ -6,7 +6,7 @@ cd "$ROOT"
 
 DOMAIN="${DOMAIN:-docker-learning.plan-it.pro}"
 API="http://127.0.0.1:4000"
-SITE_NAME="$DOMAIN"
+TEMPLATE="project-finder"
 
 if [[ ! -f .env ]]; then
   echo "Missing backend/.env" >&2
@@ -18,10 +18,21 @@ if ! curl -fsS "$API/health" >/dev/null; then
   exit 1
 fi
 
-EMAIL="$(grep -E '^GMAIL_USER=' .env | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
-if [[ -z "$EMAIL" ]]; then
-  EMAIL="admin@${DOMAIN}"
+if [[ ! -d /usr/local/hestia ]] || ! command -v v-search-domain-owner >/dev/null; then
+  echo "This VPS uses Hestia. Do not install a second Nginx or edit /etc/nginx/sites-enabled." >&2
+  echo "Install Hestia, or set this domain in the panel first." >&2
+  exit 1
 fi
+
+OWNER="$(v-search-domain-owner "$DOMAIN" || true)"
+if [[ -z "${OWNER:-}" ]]; then
+  echo "Hestia has no web domain named $DOMAIN." >&2
+  echo "Add it in Hestia for one user, then re-run. Other sites stay untouched." >&2
+  exit 1
+fi
+
+echo "==> Hestia domain $DOMAIN (user $OWNER) -> $API"
+echo "    Other Hestia domains, :8000 StarPass, and the panel are not changed."
 
 set_env() {
   local key="$1" val="$2"
@@ -32,63 +43,44 @@ set_env() {
   fi
 }
 
-who_on_80() {
-  ss -ltnp | awk '/:80 / {print; exit}'
-}
+TPL_DIR="/usr/local/hestia/data/templates/web/nginx"
+mkdir -p "$TPL_DIR"
+cp "$ROOT/nginx/hestia/${TEMPLATE}.tpl" "$TPL_DIR/${TEMPLATE}.tpl"
+cp "$ROOT/nginx/hestia/${TEMPLATE}.stpl" "$TPL_DIR/${TEMPLATE}.stpl"
 
-echo "==> who is on port 80"
-who_on_80 || echo "(nothing)"
-
-echo "==> installing nginx / apache certbot tools"
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y nginx certbot python3-certbot-nginx curl
-
-port80="$(who_on_80 || true)"
-
-use_apache=0
-if echo "$port80" | grep -q 'apache2'; then
-  use_apache=1
-  echo "==> Apache owns :80 — proxy + SSL will use Apache"
-  apt-get install -y apache2 python3-certbot-apache
-  a2enmod proxy proxy_http proxy_wstunnel headers rewrite ssl
-  cp "$ROOT/nginx/${DOMAIN}.apache.conf" "/etc/apache2/sites-available/${SITE_NAME}.conf"
-  a2ensite "$SITE_NAME"
-  apache2ctl configtest
-  systemctl reload apache2
-  certbot --apache -d "$DOMAIN" --non-interactive --agree-tos --redirect -m "$EMAIL"
-else
-  echo "==> Nginx will proxy $DOMAIN -> $API"
-  cp "$ROOT/nginx/${DOMAIN}.conf" "/etc/nginx/sites-available/${SITE_NAME}"
-  ln -sfn "/etc/nginx/sites-available/${SITE_NAME}" "/etc/nginx/sites-enabled/${SITE_NAME}"
-  rm -f /etc/nginx/sites-enabled/default
-  nginx -t
-  systemctl enable --now nginx
-  systemctl reload nginx
-  certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --redirect -m "$EMAIL"
+if ! v-list-web-domain "$OWNER" "$DOMAIN" | grep -qi 'PROXY'; then
+  echo "==> enabling proxy on this domain only"
+  v-add-web-domain-proxy "$OWNER" "$DOMAIN" || true
 fi
 
-echo "==> updating .env public URLs"
+echo "==> applying $TEMPLATE template to $DOMAIN only"
+v-change-web-domain-proxy-tpl "$OWNER" "$DOMAIN" "$TEMPLATE" yes
+
+echo "==> Let's Encrypt for $DOMAIN only"
+if ! v-add-letsencrypt-domain "$OWNER" "$DOMAIN"; then
+  echo "Let's Encrypt failed. Check DNS A record for $DOMAIN -> this VPS." >&2
+  echo "HTTP proxy is still on. Other sites were not rebuilt." >&2
+fi
+
+echo "==> updating Project Finder .env public URLs"
 set_env FRONTEND_ORIGIN "https://${DOMAIN}"
 set_env PUBLIC_APP_URL "https://${DOMAIN}"
 set_env GOOGLE_OAUTH_REDIRECT_URI "https://${DOMAIN}/api/mailbox/oauth/callback"
 rm -f .env.bak
 
-echo "==> recreating API so new env loads"
+echo "==> recreating API containers only"
 docker compose -f docker-compose.yml up -d --force-recreate --no-deps api ai-worker
 
-echo "==> checking https://${DOMAIN}/health"
+echo "==> verify"
 sleep 2
 if curl -fsS "https://${DOMAIN}/health" >/dev/null; then
-  echo "SSL ok — https://${DOMAIN}"
+  echo "OK — https://${DOMAIN}  (PROJECT FINDER, trusted SSL)"
 else
-  echo "Nginx/Apache is up but health check failed. Try: curl -I https://${DOMAIN}/health" >&2
+  echo "Template applied. If the browser still warns, wait a minute and retry:" >&2
+  echo "  curl -I https://${DOMAIN}/health" >&2
 fi
 
-if [[ "$use_apache" -eq 1 ]]; then
-  echo "Used Apache reverse proxy (port 80 was already Apache)."
-else
-  echo "Used Nginx reverse proxy."
-fi
-echo "Add this OAuth redirect in Google Cloud Console:"
-echo "  https://${DOMAIN}/api/mailbox/oauth/callback"
+echo
+echo "StarPass on this hostname is replaced. Process on :8000 is still running."
+echo "Put StarPass on another Hestia domain if you still need it on HTTPS."
+echo "Google OAuth redirect: https://${DOMAIN}/api/mailbox/oauth/callback"
