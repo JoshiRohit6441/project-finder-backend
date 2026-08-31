@@ -1,0 +1,5 @@
+location ^~ /.well-known/acme-challenge/ {
+    default_type "text/plain";
+    root /home/dev/web/docker-learning.plan-it.pro/public_html;
+    allow all;
+}

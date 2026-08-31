@@ -44,6 +44,27 @@ find_owner() {
   done
 }
 
+echo "==> nginx files that mention $DOMAIN (StarPass usually wins HTTPS here)"
+grep -RIn --include='*.conf' "$DOMAIN" /etc/nginx /home /usr/local/hestia 2>/dev/null || echo "(none in conf files)"
+
+release_hostname() {
+  local file
+  while IFS= read -r file; do
+    [[ -f "$file" ]] || continue
+    case "$file" in
+      */conf/web/${DOMAIN}/*) continue ;;
+      */conf.d/domains/${DOMAIN}*) continue ;;
+      */web/${DOMAIN}/*) continue ;;
+      */apps/docker-learning/*) continue ;;
+      */nginx/hestia/*) continue ;;
+      *.bak-project-finder) continue ;;
+    esac
+    echo "==> dropping $DOMAIN from $file (backup .bak-project-finder)"
+    cp -a "$file" "${file}.bak-project-finder"
+    sed -i -E "s/(server_name[^;]*)[[:space:]]${DOMAIN//./\\.}/\1/g" "$file"
+  done < <(grep -RIl --include='*.conf' "$DOMAIN" /etc/nginx /home 2>/dev/null || true)
+}
+
 OWNER="$(find_owner | head -n 1 | tr -d '[:space:]')"
 if [[ -z "${OWNER:-}" ]]; then
   if [[ ! -d "/home/${HESTIA_USER}" ]]; then
@@ -52,12 +73,23 @@ if [[ -z "${OWNER:-}" ]]; then
     exit 1
   fi
   echo "==> adding $DOMAIN to Hestia user $HESTIA_USER (other domains unchanged)"
-  v-add-web-domain "$HESTIA_USER" "$DOMAIN" || {
+  v-add-web-domain "$HESTIA_USER" "$DOMAIN" 72.60.201.208 || v-add-web-domain "$HESTIA_USER" "$DOMAIN" || {
     echo "v-add-web-domain failed. Existing web folders:" >&2
     ls -d /home/*/conf/web/* 2>/dev/null || true
     exit 1
   }
   OWNER="$HESTIA_USER"
+fi
+
+release_hostname
+if nginx -t 2>/dev/null; then
+  v-restart-service nginx yes || systemctl reload nginx || true
+else
+  echo "nginx -t failed after hostname release; restoring backups" >&2
+  find /etc/nginx /home -name '*.bak-project-finder' 2>/dev/null | while IFS= read -r bak; do
+    mv -f "$bak" "${bak%.bak-project-finder}"
+  done
+  nginx -t
 fi
 
 echo "==> Hestia domain $DOMAIN (user $OWNER) -> $API"
@@ -82,8 +114,18 @@ if ! v-list-web-domain "$OWNER" "$DOMAIN" | grep -qi 'PROXY'; then
   v-add-web-domain-proxy "$OWNER" "$DOMAIN" || true
 fi
 
+ACME_DIR="/home/${OWNER}/conf/web/${DOMAIN}"
+DOCROOT="/home/${OWNER}/web/${DOMAIN}/public_html"
+mkdir -p "$ACME_DIR" "${DOCROOT}/.well-known/acme-challenge"
+cp "$ROOT/nginx/hestia/nginx.conf_acme" "${ACME_DIR}/nginx.conf_acme"
+sed -i "s|/home/dev/web/docker-learning.plan-it.pro/public_html|${DOCROOT}|g" "${ACME_DIR}/nginx.conf_acme"
+chown -R "${OWNER}:${OWNER}" "${DOCROOT}/.well-known" || true
+
 echo "==> applying $TEMPLATE template to $DOMAIN only"
-v-change-web-domain-proxy-tpl "$OWNER" "$DOMAIN" "$TEMPLATE" yes
+v-change-web-domain-proxy-tpl "$OWNER" "$DOMAIN" "$TEMPLATE" yes || true
+v-rebuild-web-domain "$OWNER" "$DOMAIN" yes || true
+echo "==> domain now:"
+v-list-web-domain "$OWNER" "$DOMAIN"
 
 echo "==> Let's Encrypt for $DOMAIN only"
 if ! v-add-letsencrypt-domain "$OWNER" "$DOMAIN"; then
