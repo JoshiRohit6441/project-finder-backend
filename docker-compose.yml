@@ -11,8 +11,8 @@ x-backend-env: &backend-env
   MONGO_URI: mongodb://mongodb:27017/projectfinder
   REDIS_URL: redis://redis:6379
   QDRANT_URL: http://qdrant:6333
-  FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
-  PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:5173}
+  FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173,https://project-finder-frontend.vercel.app}
+  PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://project-finder-frontend.vercel.app}
 
 services:
   api:

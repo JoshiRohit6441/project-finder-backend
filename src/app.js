@@ -47,11 +47,33 @@ export function createApp() {
       },
     })
   );
-  const origins = String(config.frontendOrigin || "")
+  const listedOrigins = String(config.frontendOrigin || "")
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
-  app.use(cors({ origin: origins.length > 1 ? origins : origins[0] || true, credentials: true }));
+
+  function isAllowedOrigin(origin) {
+    if (!origin) return true;
+    if (listedOrigins.includes(origin)) return true;
+    try {
+      const url = new URL(origin);
+      if (url.protocol !== "https:") return false;
+      const host = url.hostname;
+      return host === "project-finder-frontend.vercel.app" ||
+        (host.endsWith(".vercel.app") && host.startsWith("project-finder-frontend"));
+    } catch {
+      return false;
+    }
+  }
+
+  app.use(
+    cors({
+      origin(origin, callback) {
+        callback(null, isAllowedOrigin(origin));
+      },
+      credentials: true,
+    })
+  );
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/", (req, res) => {
