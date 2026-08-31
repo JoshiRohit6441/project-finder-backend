@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 DOMAIN="${DOMAIN:-docker-learning.plan-it.pro}"
+HESTIA_USER="${HESTIA_USER:-dev}"
 API="http://127.0.0.1:4000"
 TEMPLATE="project-finder"
 
@@ -45,10 +46,18 @@ find_owner() {
 
 OWNER="$(find_owner | head -n 1 | tr -d '[:space:]')"
 if [[ -z "${OWNER:-}" ]]; then
-  echo "Hestia CLI was found, but no web domain named $DOMAIN." >&2
-  echo "In Hestia: Web -> Add Web Domain -> $DOMAIN  (user like dev). Then re-run." >&2
-  echo "Debug: ls /home/*/conf/web/ | grep ${DOMAIN}" >&2
-  exit 1
+  if [[ ! -d "/home/${HESTIA_USER}" ]]; then
+    echo "No Hestia user ${HESTIA_USER}. Existing domains:" >&2
+    ls -d /home/*/conf/web/* 2>/dev/null || true
+    exit 1
+  fi
+  echo "==> adding $DOMAIN to Hestia user $HESTIA_USER (other domains unchanged)"
+  v-add-web-domain "$HESTIA_USER" "$DOMAIN" || {
+    echo "v-add-web-domain failed. Existing web folders:" >&2
+    ls -d /home/*/conf/web/* 2>/dev/null || true
+    exit 1
+  }
+  OWNER="$HESTIA_USER"
 fi
 
 echo "==> Hestia domain $DOMAIN (user $OWNER) -> $API"
