@@ -6,7 +6,7 @@ import { Message } from "../../models/Message.js";
 import { JOB_STATUS, LEAD_STATUS, TASK_STATUS, MESSAGE_STATUS, MESSAGE_DIRECTION } from "../../constants/index.js";
 
 async function getDashboard() {
-  const [campaigns, jobs, leads, jobByStatus, leadByStatus, recentJobs, recentLeads, openTasks, outreachSent, replies] = await Promise.all([
+  const [campaigns, jobs, leads, jobByStatus, leadByStatus, recentJobs, recentLeads, openTasks, outreachSent, replies, needCall, called, emailsSent, whatsappSent, failedSends, emailReplies, whatsappReplies] = await Promise.all([
     Campaign.countDocuments(),
     ScrapeJob.countDocuments(),
     Lead.countDocuments(),
@@ -15,8 +15,15 @@ async function getDashboard() {
     ScrapeJob.find().sort({ updatedAt: -1 }).limit(8).lean(),
     Lead.find().sort({ createdAt: -1 }).limit(8).select("businessName country status leadScore email createdAt").lean(),
     Task.countDocuments({ status: { $in: [TASK_STATUS.OPEN, TASK_STATUS.WAITING_USER] } }),
-    Message.countDocuments({ direction: MESSAGE_DIRECTION.OUTBOUND, status: MESSAGE_STATUS.SENT }),
+    Message.countDocuments({ direction: MESSAGE_DIRECTION.OUTBOUND, status: { $in: [MESSAGE_STATUS.SENT, MESSAGE_STATUS.DELIVERED] } }),
     Message.countDocuments({ direction: MESSAGE_DIRECTION.INBOUND }),
+    Lead.countDocuments({ needsContact: true }),
+    Lead.countDocuments({ lastCallAt: { $ne: null } }),
+    Message.countDocuments({ direction: MESSAGE_DIRECTION.OUTBOUND, channel: { $ne: "whatsapp" }, status: { $in: [MESSAGE_STATUS.SENT, MESSAGE_STATUS.DELIVERED] } }),
+    Message.countDocuments({ direction: MESSAGE_DIRECTION.OUTBOUND, channel: "whatsapp", status: { $in: [MESSAGE_STATUS.SENT, MESSAGE_STATUS.DELIVERED] } }),
+    Message.countDocuments({ direction: MESSAGE_DIRECTION.OUTBOUND, status: MESSAGE_STATUS.FAILED }),
+    Message.countDocuments({ direction: MESSAGE_DIRECTION.INBOUND, channel: { $ne: "whatsapp" } }),
+    Message.countDocuments({ direction: MESSAGE_DIRECTION.INBOUND, channel: "whatsapp" }),
   ]);
 
   const jobMap = Object.fromEntries(jobByStatus.map((item) => [item._id, item.count]));
@@ -41,6 +48,13 @@ async function getDashboard() {
       openTasks,
       outreachSent,
       replies,
+      needCall,
+      called,
+      emailsSent,
+      whatsappSent,
+      failedSends,
+      emailReplies,
+      whatsappReplies,
     },
     jobByStatus: jobMap,
     leadByStatus: leadMap,

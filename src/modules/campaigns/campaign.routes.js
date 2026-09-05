@@ -7,6 +7,8 @@ import {
   listCampaignsController,
   getCampaignController,
   updateCampaignStatusController,
+  cloneCampaignController,
+  rerunCampaignController,
 } from "./campaign.controller.js";
 
 const router = protectedRouter(ROLES.ADMIN, ROLES.MANAGER);
@@ -15,5 +17,7 @@ router.get("/", listCampaignsController);
 router.post("/", validate(createCampaignSchema), createCampaignController);
 router.get("/:id", getCampaignController);
 router.patch("/:id/status", validate(updateCampaignStatusSchema), updateCampaignStatusController);
+router.post("/:id/clone", cloneCampaignController);
+router.post("/:id/rerun", rerunCampaignController);
 
 export { router as campaignRoutes };

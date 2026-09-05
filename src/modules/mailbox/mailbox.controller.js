@@ -39,9 +39,11 @@ const messagesController = asyncHandler(async (req, res) => {
   const page = Number(req.query.page || 1);
   const limit = Number(req.query.limit || 20);
   const filter = req.query.leadId ? { leadId: req.query.leadId } : { leadId: { $ne: null } };
+  if (req.query.channel === "whatsapp") filter.channel = "whatsapp";
+  else if (req.query.channel === "email") filter.channel = { $ne: "whatsapp" };
   const { items, total } = await paginate(Message, filter, { page, limit, sort: { createdAt: req.query.leadId ? 1 : -1 } });
   const leads = await Lead.find({ _id: { $in: items.map((item) => item.leadId) } })
-    .select("businessName email")
+    .select("businessName email phone")
     .lean();
   const map = Object.fromEntries(leads.map((item) => [String(item._id), item]));
   return ok(res, {

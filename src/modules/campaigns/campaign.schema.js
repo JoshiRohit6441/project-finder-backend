@@ -30,7 +30,7 @@ const createCampaignSchema = z.object({
     .default(PROJECT_TYPES.OTHER),
   countries: z.array(countryQuotaSchema).min(1),
   categories: z.array(z.string().min(2)).min(1),
-  outreachMode: z.enum(["email", "whatsapp"]).optional().default("email"),
+  outreachMode: z.enum(["email", "whatsapp", "both"]).optional().default("both"),
   filters: z
     .object({
       minRating: z.number().min(0).max(5).optional().default(0),

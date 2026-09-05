@@ -15,6 +15,7 @@ import { publishLive } from "../../live/publish.js";
 import { hasAiConfigured, getRuntimeSettings } from "../settings/settings.service.js";
 import { qualifyDecision, missingContact } from "../outreach/policy.js";
 import { detectTimezone } from "../../utils/timezoneDetect.js";
+import { findEmail } from "../enrichment/emailFinder.js";
 import { logger } from "../../utils/logger.js";
 
 async function isSuppressed(lead) {
@@ -125,6 +126,9 @@ function hasUsablePhone(phone) {
 }
 
 async function reviewCandidate(raw) {
+  if (!isCompleteEmail(raw.email) && raw.website) {
+    raw.email = (await findEmail({ website: raw.website, businessName: raw.businessName })) || raw.email;
+  }
   const emailOk = isCompleteEmail(raw.email);
   if (!raw.businessName) {
     return { ok: false, reason: "no_name" };
@@ -205,14 +209,16 @@ async function processCandidateLead(payload) {
 
   const project = normalizeProject(reviewed.pitch?.service, PROJECT_TYPES.OTHER);
   const campaign = await Campaign.findById(campaignId).select("outreachMode").lean();
-  const outreachMode = raw.outreachMode || campaign?.outreachMode || "email";
-  const needsContactFlag = missingContact({ ...raw, outreachMode });
+  const outreachMode = raw.outreachMode || campaign?.outreachMode || "both";
+  const preferredChannel = "both";
+  const needsContactFlag = missingContact(raw);
 
   try {
     const lead = await Lead.create({
       campaignId,
       jobId,
       outreachMode,
+      preferredChannel,
       needsContact: needsContactFlag,
       businessName: raw.businessName,
       category: raw.category || "",

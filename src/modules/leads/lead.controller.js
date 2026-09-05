@@ -1,7 +1,21 @@
 import { z } from "zod";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ok } from "../../utils/response.js";
-import { listLeads, getLead, approveOutreach, updateLeadStatus, updateLeadFlags, updateLeadContact, sendProposal } from "./lead.service.js";
+import {
+  listLeads,
+  getLead,
+  approveOutreach,
+  updateLeadStatus,
+  updateLeadFlags,
+  updateLeadContact,
+  sendProposal,
+  listCallQueue,
+  addCallLog,
+  assignLead,
+  updateLeadNotes,
+  findLeadEmail,
+  listUsers,
+} from "./lead.service.js";
 import { writeAudit } from "../audit/audit.service.js";
 
 const listLeadsController = asyncHandler(async (req, res) => {
@@ -13,6 +27,7 @@ const listLeadsController = asyncHandler(async (req, res) => {
     countryCode: req.query.countryCode,
     q: req.query.q,
     needsContact: req.query.needsContact,
+    assignedTo: req.query.assignedTo,
   });
   return ok(res, data);
 });
@@ -56,6 +71,7 @@ const statusController = asyncHandler(async (req, res) => {
 const flagsSchema = z.object({
   phoneVerified: z.boolean().optional(),
   whatsappOptIn: z.boolean().optional(),
+  preferredChannel: z.enum(["email", "whatsapp", "both"]).optional(),
   lawfulBasis: z.string().optional(),
   consent: z.boolean().optional(),
 });
@@ -103,4 +119,60 @@ const proposalController = asyncHandler(async (req, res) => {
   return ok(res, data);
 });
 
-export { listLeadsController, getLeadController, approveController, statusController, flagsController, contactController, proposalController };
+const callQueueController = asyncHandler(async (req, res) => {
+  const data = await listCallQueue({
+    page: Number(req.query.page || 1),
+    limit: Number(req.query.limit || 40),
+    campaignId: req.query.campaignId,
+    assignedTo: req.query.assignedTo,
+  });
+  return ok(res, data);
+});
+
+const callLogController = asyncHandler(async (req, res) => {
+  const body = z
+    .object({
+      outcome: z.enum(["reached", "no_answer", "callback", "whatsapp_saved", "email_saved", "not_fit"]),
+      note: z.string().optional().default(""),
+    })
+    .parse(req.body || {});
+  const data = await addCallLog(req.params.id, body, req.user.id);
+  return ok(res, data);
+});
+
+const assignController = asyncHandler(async (req, res) => {
+  const body = z.object({ assignedTo: z.string().optional().nullable() }).parse(req.body || {});
+  const data = await assignLead(req.params.id, body.assignedTo || null);
+  return ok(res, data);
+});
+
+const notesController = asyncHandler(async (req, res) => {
+  const body = z.object({ notes: z.string().optional().default("") }).parse(req.body || {});
+  const data = await updateLeadNotes(req.params.id, body.notes);
+  return ok(res, data);
+});
+
+const findEmailController = asyncHandler(async (req, res) => {
+  const data = await findLeadEmail(req.params.id);
+  return ok(res, data);
+});
+
+const usersController = asyncHandler(async (_req, res) => {
+  return ok(res, { items: await listUsers() });
+});
+
+export {
+  listLeadsController,
+  getLeadController,
+  approveController,
+  statusController,
+  flagsController,
+  contactController,
+  proposalController,
+  callQueueController,
+  callLogController,
+  assignController,
+  notesController,
+  findEmailController,
+  usersController,
+};

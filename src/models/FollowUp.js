@@ -8,6 +8,7 @@ const followUpSchema = new mongoose.Schema(
     attempt: { type: Number, default: 1 },
     nextAt: { type: Date, required: true, index: true },
     timezone: { type: String, default: "UTC" },
+    channel: { type: String, enum: ["email", "whatsapp"], default: "email" },
     status: { type: String, enum: Object.values(FOLLOWUP_STATUS), default: FOLLOWUP_STATUS.SCHEDULED, index: true },
   },
   { timestamps: true }

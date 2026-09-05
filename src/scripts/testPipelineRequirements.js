@@ -8,6 +8,7 @@ import {
   shouldEscalate,
   followUpOffsetDays,
   followUpAngle,
+  followUpChannel,
   warmupDailyLimit,
   withPostalFooter,
   QUALIFY_SCORE,
@@ -88,6 +89,25 @@ assert("follow-up 1 is day 3", followUpOffsetDays(1) === 3);
 assert("follow-up 2 is day 7", followUpOffsetDays(2) === 7);
 assert("follow-up 1 angle is new_angle", followUpAngle(1) === "new_angle");
 assert("follow-up 2 angle is breakup", followUpAngle(2) === "breakup");
+assert(
+  "follow-up stays on email when preferred",
+  followUpChannel({ preferredChannel: "email", email: "a@b.com", phone: "+919876543210" }, 2) === "email"
+);
+assert(
+  "follow-up stays on WhatsApp when preferred",
+  followUpChannel({ preferredChannel: "whatsapp", email: "a@b.com", phone: "+919876543210" }, 2) === "whatsapp"
+);
+assert(
+  "follow-up 2 switches channel when both",
+  followUpChannel(
+    { preferredChannel: "both", lastOutboundChannel: "email", email: "a@b.com", phone: "+919876543210" },
+    2
+  ) === "whatsapp"
+);
+assert(
+  "follow-up falls back to phone when no email",
+  followUpChannel({ preferredChannel: "email", email: "", phone: "+919876543210" }, 1) === "whatsapp"
+);
 
 assert("warmup week 1 is 10", warmupDailyLimit(new Date(), 40) === 10);
 assert(
@@ -155,21 +175,22 @@ const smo = suggestApproaches(
   { ssl: true, mobileFriendly: true, speedScore: 80, seoScore: 80, hasTitle: true, hasMetaDescription: true, hasH1: true, hasCanonical: true, socialCount: 0, socials: {}, hasGoogleAds: true, hasGoogleAnalytics: true, hasMetaPixel: true, hasBooking: false }
 );
 assert("clinic without booking gets booking or smo", smo.some((item) => item.service === "booking_system" || item.service === "smo"));
-const modeFilters = campaignFilters({ minRating: 4, minReviews: 5 }, "whatsapp");
-assert("campaign mode is whatsapp", modeFilters.outreachMode === "whatsapp" && modeFilters.minRating === 4);
+const modeFilters = campaignFilters({ minRating: 4, minReviews: 5 }, "both");
+assert("campaign default is both channels", modeFilters.outreachMode === "both" && modeFilters.minRating === 4);
 assert(
-  "whatsapp campaign with phone uses whatsapp",
+  "explicit whatsapp send uses whatsapp",
   chooseChannel(
-    { outreachMode: "whatsapp", phone: "+919876543210" },
-    { whatsappPhoneNumberId: "1", whatsappAccessToken: "t", whatsappTemplateName: "hello" }
+    { preferredChannel: "both", phone: "+919876543210", email: "a@b.com" },
+    { whatsappPhoneNumberId: "1", whatsappAccessToken: "t", whatsappTemplateName: "hello" },
+    "whatsapp"
   ) === "whatsapp"
 );
 assert(
-  "email campaign without email needs a call",
-  chooseChannel({ outreachMode: "email", phone: "+919876543210" }, {}) === "none"
+  "both prefers email when present",
+  chooseChannel({ preferredChannel: "both", email: "a@b.com", phone: "+919876543210" }, {}) === "email"
 );
-assert("missing email in email mode", missingContact({ outreachMode: "email", email: "" }) === true);
-assert("missing phone in whatsapp mode", missingContact({ outreachMode: "whatsapp", phone: "" }) === true);
+assert("needs a call only when both contacts missing", missingContact({ email: "", phone: "" }) === true);
+assert("phone only is enough to keep the lead", missingContact({ email: "", phone: "+919876543210" }) === false);
 
 if (failed) {
   console.error(`\n${failed} failed`);

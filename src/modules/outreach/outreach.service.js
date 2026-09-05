@@ -19,7 +19,7 @@ import { publishEvent } from "../../queues/streams.js";
 import { publishLive } from "../../live/publish.js";
 import { sha256 } from "../../utils/crypto.js";
 import { httpError } from "../../utils/httpError.js";
-import { canFirstOutreach, canContinueOutreach, canColdEmail, chooseChannel, followUpOffsetDays, followUpAngle, withPostalFooter, hasUsablePhone } from "./policy.js";
+import { canFirstOutreach, canContinueOutreach, canColdEmail, chooseChannel, followUpOffsetDays, followUpAngle, followUpChannel, withPostalFooter, hasUsablePhone } from "./policy.js";
 import { sendWhatsApp } from "../whatsapp/whatsapp.service.js";
 
 const TERMINAL = new Set(TERMINAL_LEAD_STATUSES);
@@ -36,10 +36,9 @@ async function ensurePitch(lead) {
   return lead;
 }
 
-async function assertSendable(lead, { firstTouch = false } = {}) {
+async function assertSendable(lead, { firstTouch = false, channel: explicit } = {}) {
   const settings = await getRuntimeSettings();
-  const channel = chooseChannel(lead, settings);
-  if (channel === "none") {
+  const channel = chooseChannel(lead, settings, explicit);
     throw httpError("Call this lead and add a WhatsApp number or email first", 422);
   }
   if (channel === "email" && !isCompleteEmail(lead.email)) throw httpError("Lead email is masked or incomplete", 422);
@@ -73,7 +72,7 @@ async function getOrCreateThread(lead, account, subject) {
     thread = await EmailThread.create({
       leadId: lead._id,
       campaignId: lead.campaignId,
-      accountId: account._id,
+      accountId: account?._id,
       subject,
     });
   }
@@ -93,10 +92,20 @@ function withFooter(body, url, settings) {
   return withPostalFooter(body, settings, url);
 }
 
-async function prepareOutreach(leadId) {
+async function resolveMailbox(channel) {
+  try {
+    return await getActiveMailbox();
+  } catch (error) {
+    if (channel === "email") throw error;
+    return null;
+  }
+}
+
+async function prepareOutreach(leadId, options = {}) {
   const lead = await Lead.findById(leadId);
   if (!lead) throw httpError("Lead not found", 404);
-  await assertSendable(lead, { firstTouch: true });
+  const asked = options.channel || "";
+  await assertSendable(lead, { firstTouch: !lead.firstContactedAt, channel: asked });
   await ensurePitch(lead);
   if (!lead.timezone) {
     lead.timezone = detectTimezone({
@@ -106,11 +115,12 @@ async function prepareOutreach(leadId) {
     }) || timezoneForCountry(lead.countryCode);
   }
   const settings = await getRuntimeSettings();
-  const channel = chooseChannel(lead, settings);
-  const account = await getActiveMailbox();
+  const channel = chooseChannel(lead, settings, asked);
+  const account = await resolveMailbox(channel);
   const draft = (await hasAiConfigured())
-    ? await generateOutreach({
+        ? await generateOutreach({
         lead: lead.toObject(),
+        settings,
         salesContext: settings.salesContext,
         sender: {
           name: settings.senderName,
@@ -128,20 +138,21 @@ async function prepareOutreach(leadId) {
   }
   draft.body = withSender(draft.body, settings);
   const thread = await getOrCreateThread(lead, account, draft.subject);
-  const key = sha256(`outreach:${lead._id}:${thread._id}`);
+  const key = sha256(`outreach:${lead._id}:${channel}:${thread._id}`);
   const existing = await Message.findOne({ idempotencyKey: key });
   if (existing) return { lead, thread, message: existing };
   const message = await Message.create({
     threadId: thread._id,
     leadId: lead._id,
-    accountId: account._id,
+    accountId: account?._id,
     direction: MESSAGE_DIRECTION.OUTBOUND,
     status: MESSAGE_STATUS.DRAFT,
-    from: account.email,
+    from: channel === "whatsapp" ? settings.senderWhatsapp || "whatsapp" : account?.email || "",
     to: channel === "whatsapp" ? lead.phone : lead.email,
     channel: channel === "whatsapp" ? "whatsapp" : "email",
     subject: draft.subject,
     bodyText: draft.body,
+    templateKind: options.templateKind || "intro",
     idempotencyKey: key,
   });
   thread.subject = draft.subject;
@@ -163,21 +174,30 @@ async function sendStoredMessage(messageId, extras = {}) {
   if (!message) throw httpError("Message not found", 404);
   if (message.status === MESSAGE_STATUS.SENT) return message;
   const lead = await Lead.findById(message.leadId);
-  await assertSendable(lead, { firstTouch: !lead.firstContactedAt && lead.status !== LEAD_STATUS.CONTACTED });
+  await assertSendable(lead, {
+    firstTouch: !lead.firstContactedAt && lead.status !== LEAD_STATUS.CONTACTED,
+    channel: extras.channel || message.channel,
+  });
   const thread = await EmailThread.findById(message.threadId);
   const previous = await Message.find({ threadId: thread._id, status: MESSAGE_STATUS.SENT }).sort({ createdAt: 1 });
   const lastOutbound = [...previous].reverse().find((item) => item.direction === MESSAGE_DIRECTION.OUTBOUND);
   const refs = previous.map((item) => item.internetMessageId).filter(Boolean);
   const url = unsubscribeUrl(lead.email);
   const settings = await getRuntimeSettings();
-  const channel = extras.channel || chooseChannel(lead, settings);
+  const channel = extras.channel || message.channel || chooseChannel(lead, settings);
   const firstTouch = !lead.firstContactedAt;
   const text = withFooter(extras.body || message.bodyText, url, settings);
   let result;
   if (channel === "whatsapp") {
-    result = await sendWhatsApp({ lead, bodyText: extras.body || message.bodyText, isFirstOutbound: firstTouch });
+    result = await sendWhatsApp({
+      lead,
+      bodyText: extras.body || message.bodyText,
+      isFirstOutbound: firstTouch,
+      templateKind: extras.templateKind || message.templateKind || (lead.followUpCount ? "followup" : "intro"),
+    });
     message.channel = "whatsapp";
     message.to = lead.phone;
+    message.providerStatus = result.rejected?.length ? "failed" : "sent";
   } else {
     result = await sendMail({
       to: lead.email,
@@ -204,20 +224,52 @@ async function sendStoredMessage(messageId, extras = {}) {
   }
   lead.lastContactedAt = new Date();
   if (!lead.firstContactedAt) lead.firstContactedAt = lead.lastContactedAt;
-  lead.preferredChannel = message.channel || "email";
+  if (lead.preferredChannel !== "both") lead.preferredChannel = message.channel || lead.preferredChannel || "email";
+  lead.lastOutboundChannel = message.channel || "";
   await lead.save();
-  await Campaign.findByIdAndUpdate(lead.campaignId, { $inc: { "stats.outreachSent": 1 } });
+  const sentInc = { "stats.outreachSent": 1 };
+  if (message.channel === "whatsapp") sentInc["stats.whatsappSent"] = 1;
+  else sentInc["stats.emailsSent"] = 1;
+  if (message.status === MESSAGE_STATUS.FAILED) sentInc["stats.failedSends"] = 1;
+  await Campaign.findByIdAndUpdate(lead.campaignId, { $inc: sentInc });
   await scheduleFollowUp(lead, thread);
   await publishLive("mailbox", { messageId: String(message._id), leadId: String(lead._id), sent: true });
   return message;
 }
 
-async function sendOutreachNow(leadId) {
-  const prepared = await prepareOutreach(leadId);
+async function sendOutreachNow(leadId, options = {}) {
+  const prepared = await prepareOutreach(leadId, options);
   if (prepared.message.status === MESSAGE_STATUS.DRAFT) {
-    return sendStoredMessage(prepared.message._id);
+    return sendStoredMessage(prepared.message._id, { channel: options.channel || prepared.message.channel, body: options.body });
   }
   return prepared.message;
+}
+
+async function composeAndSend(leadId, { channel, body } = {}) {
+  const text = String(body || "").trim();
+  if (!text) throw httpError("Message body is required", 422);
+  const lead = await Lead.findById(leadId);
+  if (!lead) throw httpError("Lead not found", 404);
+  const asked = channel === "whatsapp" ? "whatsapp" : "email";
+  await assertSendable(lead, { firstTouch: !lead.firstContactedAt, channel: asked });
+  const settings = await getRuntimeSettings();
+  const account = await resolveMailbox(asked);
+  const thread = await getOrCreateThread(lead, account, `Chat with ${lead.businessName}`);
+  const message = await Message.create({
+    threadId: thread._id,
+    leadId: lead._id,
+    accountId: account?._id,
+    direction: MESSAGE_DIRECTION.OUTBOUND,
+    status: MESSAGE_STATUS.DRAFT,
+    from: asked === "whatsapp" ? settings.senderWhatsapp || "whatsapp" : account?.email || "",
+    to: asked === "whatsapp" ? lead.phone : lead.email,
+    channel: asked,
+    subject: asked === "whatsapp" ? "WhatsApp" : thread.subject || `Chat with ${lead.businessName}`,
+    bodyText: text,
+  });
+  thread.messageCount += 1;
+  await thread.save();
+  return sendStoredMessage(message._id, { channel: asked, body: text });
 }
 
 async function scheduleFollowUp(lead, thread) {
@@ -243,6 +295,7 @@ async function scheduleFollowUp(lead, thread) {
     attempt: lead.followUpCount + 1,
     nextAt,
     timezone,
+    channel: followUpChannel(lead, attempt),
     status: FOLLOWUP_STATUS.SCHEDULED,
   });
 }
@@ -261,13 +314,15 @@ async function processDueFollowUps() {
       continue;
     }
     try {
-      await assertSendable(lead);
+      const channel = item.channel || followUpChannel(lead, item.attempt);
+      await assertSendable(lead, { channel, firstTouch: false });
       const settings = await getRuntimeSettings();
       const content = (await hasAiConfigured())
         ? await generateFollowUp({
             lead: lead.toObject(),
             attempt: item.attempt,
             angle: followUpAngle(item.attempt),
+            settings,
             salesContext: settings.salesContext,
             sender: {
               name: settings.senderName,
@@ -278,21 +333,23 @@ async function processDueFollowUps() {
           })
         : { subject: `Following up — ${lead.businessName}`, body: `Hello,\n\nJust checking in to see if you had a chance to read my previous note about a website for ${lead.businessName}. Happy to share more detail if useful.\n\nThanks` };
       content.body = withSender(content.body, settings);
-      const account = await getActiveMailbox();
+      const account = await resolveMailbox(channel);
       const thread = await getOrCreateThread(lead, account, content.subject);
       const message = await Message.create({
         threadId: thread._id,
         leadId: lead._id,
-        accountId: account._id,
+        accountId: account?._id,
         direction: MESSAGE_DIRECTION.OUTBOUND,
         status: MESSAGE_STATUS.DRAFT,
-        from: account.email,
-        to: lead.email,
+        from: channel === "whatsapp" ? settings.senderWhatsapp || "whatsapp" : account?.email || "",
+        to: channel === "whatsapp" ? lead.phone : lead.email,
+        channel,
+        templateKind: "followup",
         subject: content.subject,
         bodyText: content.body,
-        idempotencyKey: sha256(`followup:${lead._id}:${item.attempt}`),
+        idempotencyKey: sha256(`followup:${lead._id}:${item.attempt}:${channel}`),
       });
-      await sendStoredMessage(message._id);
+      await sendStoredMessage(message._id, { channel, templateKind: "followup" });
       item.status = FOLLOWUP_STATUS.SENT;
       await item.save();
       lead.followUpCount = item.attempt;
@@ -313,4 +370,4 @@ async function suppressEmail(email, reason = "opt_out") {
   await Promise.all(leads.map((item) => cancelFollowUps(item._id)));
 }
 
-export { prepareOutreach, sendOutreachNow, sendStoredMessage, processDueFollowUps, cancelFollowUps, suppressEmail, unsubscribeUrl, getOrCreateThread };
+export { prepareOutreach, sendOutreachNow, sendStoredMessage, composeAndSend, processDueFollowUps, cancelFollowUps, suppressEmail, unsubscribeUrl, getOrCreateThread };

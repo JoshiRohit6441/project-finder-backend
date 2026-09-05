@@ -3,7 +3,7 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ok } from "../../utils/response.js";
 import { Message } from "../../models/Message.js";
 import { EmailThread } from "../../models/EmailThread.js";
-import { prepareOutreach, sendOutreachNow, sendStoredMessage } from "./outreach.service.js";
+import { prepareOutreach, sendOutreachNow, sendStoredMessage, composeAndSend } from "./outreach.service.js";
 import { writeAudit } from "../audit/audit.service.js";
 
 const listThreadController = asyncHandler(async (req, res) => {
@@ -12,8 +12,15 @@ const listThreadController = asyncHandler(async (req, res) => {
   return ok(res, { thread, messages });
 });
 
+const channelSchema = z.object({
+  channel: z.enum(["email", "whatsapp"]).optional(),
+  body: z.string().optional(),
+  templateKind: z.enum(["intro", "followup", "meeting"]).optional(),
+});
+
 const prepareController = asyncHandler(async (req, res) => {
-  const data = await prepareOutreach(req.params.id);
+  const body = channelSchema.parse(req.body || {});
+  const data = await prepareOutreach(req.params.id, body);
   await writeAudit({
     actorId: req.user.id,
     action: "outreach.prepare",
@@ -25,7 +32,10 @@ const prepareController = asyncHandler(async (req, res) => {
 });
 
 const sendController = asyncHandler(async (req, res) => {
-  const data = await sendOutreachNow(req.params.id);
+  const body = channelSchema.parse(req.body || {});
+  const data = body.body
+    ? await composeAndSend(req.params.id, body)
+    : await sendOutreachNow(req.params.id, body);
   await writeAudit({
     actorId: req.user.id,
     action: "outreach.send",

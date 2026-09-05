@@ -54,8 +54,8 @@ async function getOrCreateInboundCampaign() {
     status: CAMPAIGN_STATUS.ACTIVE,
     countries: [{ country: "India", countryCode: "IN", targetCount: 1, location: "" }],
     categories: ["inbound"],
-    outreachMode: "email",
-    filters: { minRating: 0, minReviews: 0, outreachMode: "email" },
+    outreachMode: "both",
+    filters: { minRating: 0, minReviews: 0, outreachMode: "both" },
     maxScrapeLimit: 1,
     createdBy: admin._id,
   });

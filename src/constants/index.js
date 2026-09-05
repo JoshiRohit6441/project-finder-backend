@@ -72,6 +72,7 @@ const CAMPAIGN_KIND = Object.freeze({
 const OUTREACH_MODES = Object.freeze({
   EMAIL: "email",
   WHATSAPP: "whatsapp",
+  BOTH: "both",
 });
 
 const TERMINAL_LEAD_STATUSES = Object.freeze([

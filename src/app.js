@@ -14,6 +14,7 @@ import { meetingRoutes } from "./modules/meetings/meeting.routes.js";
 import { publicRoutes } from "./modules/public/public.routes.js";
 import { liveRoutes } from "./live/live.routes.js";
 import { settingsRoutes } from "./modules/settings/settings.routes.js";
+import { whatsappRoutes } from "./modules/whatsapp/whatsapp.routes.js";
 import { notFound, errorHandler } from "./middleware/errorHandler.js";
 import { ok } from "./utils/response.js";
 import { renderInfoPage, serviceInfo } from "./pages/rootInfo.js";
@@ -31,6 +32,7 @@ const routes = [
   ["/api/public", publicRoutes],
   ["/api/live", liveRoutes],
   ["/api/settings", settingsRoutes],
+  ["/api/whatsapp", whatsappRoutes],
 ];
 
 export function createApp() {

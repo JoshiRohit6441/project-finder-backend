@@ -109,8 +109,10 @@ function hasUsableEmail(email) {
   return value.includes("@") && !/[*#\[\]{}<>]/.test(value);
 }
 
-function chooseChannel(lead = {}, settings = {}) {
-  const preferred = String(lead.outreachMode || "").toLowerCase();
+function chooseChannel(lead = {}, settings = {}, explicit = "") {
+  const asked = String(explicit || "").toLowerCase();
+  if (asked === "email" || asked === "whatsapp") return asked;
+  const preferred = String(lead.preferredChannel || lead.outreachMode || "").toLowerCase();
   const emailOk = hasUsableEmail(lead.email);
   const phoneOk = hasUsablePhone(lead.phone);
   const waReady = Boolean(
@@ -123,7 +125,12 @@ function chooseChannel(lead = {}, settings = {}) {
   }
   if (preferred === "email") {
     if (emailOk) return "email";
-    if (phoneOk && waReady && lead.whatsappOptIn) return "whatsapp";
+    if (phoneOk && waReady) return "whatsapp";
+    return "none";
+  }
+  if (preferred === "both") {
+    if (emailOk) return "email";
+    if (phoneOk && waReady) return "whatsapp";
     return "none";
   }
   if (phoneOk && lead.whatsappOptIn && waReady) return "whatsapp";
@@ -131,9 +138,7 @@ function chooseChannel(lead = {}, settings = {}) {
 }
 
 function missingContact(lead = {}) {
-  const mode = String(lead.outreachMode || "email").toLowerCase();
-  if (mode === "whatsapp") return !hasUsablePhone(lead.phone);
-  return !hasUsableEmail(lead.email);
+  return !hasUsableEmail(lead.email) && !hasUsablePhone(lead.phone);
 }
 
 function whatsappSendMode(lead = {}, isFirstOutbound = true) {
@@ -160,6 +165,23 @@ function followUpOffsetDays(attempt) {
 
 function followUpAngle(attempt) {
   return Number(attempt) <= 1 ? "new_angle" : "breakup";
+}
+
+function followUpChannel(lead = {}, attempt = 1) {
+  const preferred = String(lead.preferredChannel || lead.outreachMode || "both");
+  const last = String(lead.lastOutboundChannel || "");
+  const emailOk = hasUsableEmail(lead.email);
+  const phoneOk = hasUsablePhone(lead.phone);
+  if (preferred === "email") return emailOk ? "email" : phoneOk ? "whatsapp" : "email";
+  if (preferred === "whatsapp") return phoneOk ? "whatsapp" : emailOk ? "email" : "whatsapp";
+  if (Number(attempt) >= 2) {
+    const other = last === "whatsapp" ? "email" : "whatsapp";
+    if (other === "email" && emailOk) return "email";
+    if (other === "whatsapp" && phoneOk) return "whatsapp";
+  }
+  if (last === "whatsapp" && phoneOk) return "whatsapp";
+  if (emailOk) return "email";
+  return phoneOk ? "whatsapp" : "email";
 }
 
 function warmupDailyLimit(warmupStartedAt, fullLimit = 40, now = new Date()) {
@@ -202,6 +224,7 @@ export {
   shouldEscalate,
   followUpOffsetDays,
   followUpAngle,
+  followUpChannel,
   warmupDailyLimit,
   withPostalFooter,
 };

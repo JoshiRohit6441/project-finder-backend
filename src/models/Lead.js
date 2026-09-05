@@ -69,6 +69,22 @@ const leadSchema = new mongoose.Schema(
     preferredChannel: { type: String, default: "" },
     outreachMode: { type: String, default: "email" },
     needsContact: { type: Boolean, default: false },
+    lastOutboundChannel: { type: String, default: "" },
+    assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
+    notes: { type: String, default: "" },
+    lastCallAt: { type: Date },
+    lastCallOutcome: { type: String, default: "" },
+    callLog: {
+      type: [
+        {
+          at: { type: Date, default: Date.now },
+          outcome: { type: String, default: "" },
+          note: { type: String, default: "" },
+          userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        },
+      ],
+      default: [],
+    },
     consentAt: { type: Date },
     lawfulBasis: { type: String, default: "" },
     proposalSentAt: { type: Date },

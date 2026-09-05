@@ -1,7 +1,9 @@
+import mongoose from "mongoose";
 import { Campaign } from "../../models/Campaign.js";
 import { ScrapeJob } from "../../models/ScrapeJob.js";
 import { Lead } from "../../models/Lead.js";
-import { CAMPAIGN_STATUS, JOB_STATUS, JOB_TYPES, LEAD_SOURCE, LEAD_STATUS, PROJECT_TYPES, TERMINAL_LEAD_STATUSES } from "../../constants/index.js";
+import { Message } from "../../models/Message.js";
+import { CAMPAIGN_STATUS, JOB_STATUS, JOB_TYPES, LEAD_SOURCE, LEAD_STATUS, PROJECT_TYPES, TERMINAL_LEAD_STATUSES, MESSAGE_DIRECTION, MESSAGE_STATUS } from "../../constants/index.js";
 import { normalizeProject, pitchForProject } from "../leads/projects.js";
 import { enqueueJob } from "../../queues/streams.js";
 import { publishLive } from "../../live/publish.js";
@@ -11,7 +13,9 @@ import { sha256 } from "../../utils/crypto.js";
 import { campaignFilters } from "./campaign.filters.js";
 
 async function createCampaign(payload, userId) {
-  const outreachMode = payload.outreachMode === "whatsapp" ? "whatsapp" : "email";
+  const outreachMode = ["email", "whatsapp", "both"].includes(payload.outreachMode)
+    ? payload.outreachMode
+    : "both";
   const filters = campaignFilters(payload.filters, outreachMode);
   const campaign = await Campaign.create({
     name: payload.name,
@@ -85,7 +89,109 @@ async function getCampaign(id) {
     if (completed) campaign = completed;
   }
   const jobs = await ScrapeJob.find({ campaignId: id }).sort({ createdAt: -1 }).lean();
-  return { ...campaign, jobs };
+  const funnel = await campaignFunnel(id);
+  return { ...campaign, jobs, funnel };
+}
+
+async function campaignFunnel(campaignId) {
+  const cid = new mongoose.Types.ObjectId(String(campaignId));
+  const leadIds = (await Lead.find({ campaignId: cid }).select("_id").lean()).map((item) => item._id);
+  const [statusGroups, needsCall, called, outbound, inbound, failed] = await Promise.all([
+    Lead.aggregate([{ $match: { campaignId: cid } }, { $group: { _id: "$status", count: { $sum: 1 } } }]),
+    Lead.countDocuments({ campaignId: cid, needsContact: true }),
+    Lead.countDocuments({ campaignId: cid, lastCallAt: { $ne: null } }),
+    leadIds.length
+      ? Message.aggregate([
+          { $match: { leadId: { $in: leadIds }, direction: MESSAGE_DIRECTION.OUTBOUND, status: { $in: [MESSAGE_STATUS.SENT, MESSAGE_STATUS.DELIVERED] } } },
+          { $group: { _id: "$channel", count: { $sum: 1 } } },
+        ])
+      : [],
+    leadIds.length
+      ? Message.aggregate([
+          { $match: { leadId: { $in: leadIds }, direction: MESSAGE_DIRECTION.INBOUND } },
+          { $group: { _id: "$channel", count: { $sum: 1 } } },
+        ])
+      : [],
+    leadIds.length
+      ? Message.countDocuments({ leadId: { $in: leadIds }, direction: MESSAGE_DIRECTION.OUTBOUND, status: MESSAGE_STATUS.FAILED })
+      : 0,
+  ]);
+  const statusMap = Object.fromEntries(statusGroups.map((item) => [item._id, item.count]));
+  const sentMap = Object.fromEntries(outbound.map((item) => [item._id || "email", item.count]));
+  const replyMap = Object.fromEntries(inbound.map((item) => [item._id || "email", item.count]));
+  return {
+    needCall: needsCall,
+    called,
+    emailed: sentMap.email || 0,
+    whatsappSent: sentMap.whatsapp || 0,
+    emailReplies: replyMap.email || 0,
+    whatsappReplies: replyMap.whatsapp || 0,
+    failedSends: failed,
+    qualified: statusMap[LEAD_STATUS.QUALIFIED] || 0,
+    interested: statusMap[LEAD_STATUS.INTERESTED] || 0,
+    meetings: statusMap[LEAD_STATUS.MEETING_SCHEDULED] || 0,
+    won: statusMap[LEAD_STATUS.WON] || 0,
+    lost: statusMap[LEAD_STATUS.LOST] || 0,
+  };
+}
+
+function campaignInputFrom(source, name) {
+  const raw = source.toObject ? source.toObject() : source;
+  return {
+    name,
+    outreachMode: raw.outreachMode || "both",
+    countries: (raw.countries || []).map((item) => ({
+      country: item.country,
+      countryCode: item.countryCode,
+      targetCount: item.targetCount,
+      location: item.location || "",
+      state: item.state || "",
+      city: item.city || "",
+    })),
+    categories: raw.categories || [],
+    filters: raw.filters || {},
+    maxScrapeLimit: raw.maxScrapeLimit,
+  };
+}
+
+async function cloneCampaign(id, userId) {
+  const source = await Campaign.findById(id);
+  if (!source) throw httpError("Campaign not found", 404);
+  return createCampaign(campaignInputFrom(source, `${source.name} (copy)`), userId);
+}
+
+async function rerunCampaign(id) {
+  const campaign = await Campaign.findById(id);
+  if (!campaign) throw httpError("Campaign not found", 404);
+  campaign.status = CAMPAIGN_STATUS.ACTIVE;
+  await campaign.save();
+  const filters = campaign.filters || {};
+  const jobs = await ScrapeJob.insertMany(
+    campaign.countries.map((item) => ({
+      campaignId: campaign._id,
+      country: item.country,
+      countryCode: item.countryCode,
+      location: item.location || [item.city, item.state].filter(Boolean).join(", "),
+      state: item.state || "",
+      city: item.city || "",
+      targetCount: item.targetCount,
+      maxScrapeLimit: campaign.maxScrapeLimit,
+      categories: campaign.categories,
+      filters,
+      outreachMode: campaign.outreachMode,
+      status: JOB_STATUS.QUEUED,
+    }))
+  );
+  await Promise.all(
+    jobs.map((job) =>
+      enqueueJob(JOB_TYPES.SCRAPE, {
+        jobId: String(job._id),
+        campaignId: String(campaign._id),
+      })
+    )
+  );
+  await publishLive("jobs", { campaignId: String(campaign._id) });
+  return { campaign, jobs };
 }
 
 async function updateCampaignStatus(id, status) {
@@ -109,8 +215,8 @@ async function createManualCampaign(name, userId, project = PROJECT_TYPES.NEW_WE
     status: CAMPAIGN_STATUS.ACTIVE,
     countries: [{ country: "India", countryCode: "IN", targetCount: 1, location: "" }],
     categories: ["website"],
-    outreachMode: "email",
-    filters: { minRating: 0, minReviews: 0, outreachMode: "email" },
+    outreachMode: "both",
+    filters: { minRating: 0, minReviews: 0, outreachMode: "both" },
     maxScrapeLimit: 1,
     createdBy: userId,
   });
@@ -171,4 +277,4 @@ async function addManualLead(campaignId, input) {
   return lead;
 }
 
-export { createCampaign, listCampaigns, getCampaign, updateCampaignStatus, maybeCompleteCampaign, createManualCampaign, addManualLead };
+export { createCampaign, listCampaigns, getCampaign, updateCampaignStatus, maybeCompleteCampaign, createManualCampaign, addManualLead, cloneCampaign, rerunCampaign };

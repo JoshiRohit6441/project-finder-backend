@@ -1,6 +1,6 @@
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ok } from "../../utils/response.js";
-import { createCampaign, listCampaigns, getCampaign, updateCampaignStatus } from "./campaign.service.js";
+import { createCampaign, listCampaigns, getCampaign, updateCampaignStatus, cloneCampaign, rerunCampaign } from "./campaign.service.js";
 import { writeAudit } from "../audit/audit.service.js";
 
 const createCampaignController = asyncHandler(async (req, res) => {
@@ -41,4 +41,36 @@ const updateCampaignStatusController = asyncHandler(async (req, res) => {
   return ok(res, data);
 });
 
-export { createCampaignController, listCampaignsController, getCampaignController, updateCampaignStatusController };
+const cloneCampaignController = asyncHandler(async (req, res) => {
+  const result = await cloneCampaign(req.params.id, req.user.id);
+  await writeAudit({
+    actorId: req.user.id,
+    action: "campaign.clone",
+    entityType: "campaign",
+    entityId: result.campaign._id,
+    metadata: { from: req.params.id },
+    ip: req.ip,
+  });
+  return ok(res, result, 201);
+});
+
+const rerunCampaignController = asyncHandler(async (req, res) => {
+  const result = await rerunCampaign(req.params.id);
+  await writeAudit({
+    actorId: req.user.id,
+    action: "campaign.rerun",
+    entityType: "campaign",
+    entityId: req.params.id,
+    ip: req.ip,
+  });
+  return ok(res, result);
+});
+
+export {
+  createCampaignController,
+  listCampaignsController,
+  getCampaignController,
+  updateCampaignStatusController,
+  cloneCampaignController,
+  rerunCampaignController,
+};

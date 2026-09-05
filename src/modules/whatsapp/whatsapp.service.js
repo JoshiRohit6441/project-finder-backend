@@ -7,9 +7,16 @@ function digits(phone) {
   return String(phone || "").replace(/\D/g, "");
 }
 
-async function sendWhatsAppTemplate({ to, bodyText, lead }) {
+function templateNameFor(settings, kind = "intro") {
+  if (kind === "followup" && settings.whatsappFollowupTemplate) return settings.whatsappFollowupTemplate;
+  if (kind === "meeting" && settings.whatsappMeetingTemplate) return settings.whatsappMeetingTemplate;
+  return settings.whatsappTemplateName;
+}
+
+async function sendWhatsAppTemplate({ to, bodyText, lead, templateKind = "intro" }) {
   const settings = await getRuntimeSettings();
-  if (!settings.whatsappPhoneNumberId || !settings.whatsappAccessToken || !settings.whatsappTemplateName) {
+  const name = templateNameFor(settings, templateKind);
+  if (!settings.whatsappPhoneNumberId || !settings.whatsappAccessToken || !name) {
     throw httpError("WhatsApp Business API is not configured", 503);
   }
   const payload = {
@@ -17,7 +24,7 @@ async function sendWhatsAppTemplate({ to, bodyText, lead }) {
     to: digits(to),
     type: "template",
     template: {
-      name: settings.whatsappTemplateName,
+      name,
       language: { code: settings.whatsappTemplateLanguage || "en" },
       components: [
         {
@@ -64,10 +71,10 @@ async function graphSend(settings, payload) {
   return { messageId: data?.messages?.[0]?.id || "", accepted: [payload.to], rejected: [] };
 }
 
-async function sendWhatsApp({ lead, bodyText, isFirstOutbound }) {
+async function sendWhatsApp({ lead, bodyText, isFirstOutbound, templateKind = "intro" }) {
   const mode = whatsappSendMode(lead, isFirstOutbound);
   if (mode === "template") {
-    return sendWhatsAppTemplate({ to: lead.phone, bodyText, lead });
+    return sendWhatsAppTemplate({ to: lead.phone, bodyText, lead, templateKind });
   }
   return sendWhatsAppFreeform({ to: lead.phone, bodyText });
 }
