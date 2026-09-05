@@ -19,7 +19,7 @@ import { publishEvent } from "../../queues/streams.js";
 import { publishLive } from "../../live/publish.js";
 import { sha256 } from "../../utils/crypto.js";
 import { httpError } from "../../utils/httpError.js";
-import { canFirstOutreach, canContinueOutreach, canColdEmail, chooseChannel, followUpOffsetDays, followUpAngle, followUpChannel, withPostalFooter, hasUsablePhone } from "./policy.js";
+import { canFirstOutreach, canContinueOutreach, canColdEmail, chooseChannel, followUpOffsetDays, followUpAngle, followUpChannel, withPostalFooter, hasUsablePhone, missingContact } from "./policy.js";
 import { sendWhatsApp } from "../whatsapp/whatsapp.service.js";
 
 const TERMINAL = new Set(TERMINAL_LEAD_STATUSES);
@@ -39,6 +39,7 @@ async function ensurePitch(lead) {
 async function assertSendable(lead, { firstTouch = false, channel: explicit } = {}) {
   const settings = await getRuntimeSettings();
   const channel = chooseChannel(lead, settings, explicit);
+  if (channel === "none" || missingContact(lead)) {
     throw httpError("Call this lead and add a WhatsApp number or email first", 422);
   }
   if (channel === "email" && !isCompleteEmail(lead.email)) throw httpError("Lead email is masked or incomplete", 422);
