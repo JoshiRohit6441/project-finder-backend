@@ -4,7 +4,17 @@ import { encrypt, decrypt } from "../../utils/crypto.js";
 import { getRedis } from "../../db/redis.js";
 
 const SETTINGS_ID = "app";
-const SECRETS = ["geminiApiKey", "openaiApiKey", "googlePlacesApiKey", "gmailAppPassword", "oauthClientSecret"];
+const SECRETS = [
+  "geminiApiKey",
+  "openaiApiKey",
+  "googlePlacesApiKey",
+  "gmailAppPassword",
+  "oauthClientSecret",
+  "instantlyApiKey",
+  "smartleadApiKey",
+  "whatsappAccessToken",
+  "inboxWebhookSecret",
+];
 
 let snapshot = null;
 let cachedAt = 0;
@@ -28,6 +38,18 @@ function envDefaults() {
     senderProfession: process.env.SENDER_PROFESSION || "",
     senderEmail: process.env.SENDER_EMAIL || "",
     senderWhatsapp: process.env.SENDER_WHATSAPP || "",
+    senderPostalAddress: process.env.SENDER_POSTAL_ADDRESS || "",
+    sendingProvider: process.env.SENDING_PROVIDER || "gmail",
+    instantlyApiKey: process.env.INSTANTLY_API_KEY || "",
+    smartleadApiKey: process.env.SMARTLEAD_API_KEY || "",
+    smartleadCampaignId: process.env.SMARTLEAD_CAMPAIGN_ID || "",
+    extraSmtpAccounts: process.env.EXTRA_SMTP_ACCOUNTS || "",
+    whatsappPhoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || "",
+    whatsappAccessToken: process.env.WHATSAPP_ACCESS_TOKEN || "",
+    whatsappBusinessId: process.env.WHATSAPP_BUSINESS_ID || "",
+    whatsappTemplateName: process.env.WHATSAPP_TEMPLATE_NAME || "",
+    whatsappTemplateLanguage: process.env.WHATSAPP_TEMPLATE_LANGUAGE || "en",
+    inboxWebhookSecret: process.env.INBOX_WEBHOOK_SECRET || "",
     outreachRequireApproval: config.outreach.requireApproval,
     createLeadsFromInbox: false,
     outreachDailyLimit: config.outreach.dailyLimit,
@@ -101,6 +123,20 @@ function toRuntime(doc) {
     senderProfession: value("senderProfession"),
     senderEmail: value("senderEmail"),
     senderWhatsapp: value("senderWhatsapp"),
+    senderPostalAddress: value("senderPostalAddress"),
+    sendingProvider: ["gmail", "instantly", "smartlead"].includes(value("sendingProvider"))
+      ? value("sendingProvider")
+      : "gmail",
+    instantlyApiKey: value("instantlyApiKey"),
+    smartleadApiKey: value("smartleadApiKey"),
+    smartleadCampaignId: value("smartleadCampaignId"),
+    extraSmtpAccounts: value("extraSmtpAccounts"),
+    whatsappPhoneNumberId: value("whatsappPhoneNumberId"),
+    whatsappAccessToken: value("whatsappAccessToken"),
+    whatsappBusinessId: value("whatsappBusinessId"),
+    whatsappTemplateName: value("whatsappTemplateName"),
+    whatsappTemplateLanguage: value("whatsappTemplateLanguage") || "en",
+    inboxWebhookSecret: value("inboxWebhookSecret"),
     outreachRequireApproval: Boolean(value("outreachRequireApproval")),
     createLeadsFromInbox: Boolean(value("createLeadsFromInbox")),
     outreachDailyLimit: Number(value("outreachDailyLimit")),
@@ -166,6 +202,18 @@ function publicView(runtime) {
     senderProfession: runtime.senderProfession,
     senderEmail: runtime.senderEmail,
     senderWhatsapp: runtime.senderWhatsapp,
+    senderPostalAddress: runtime.senderPostalAddress,
+    sendingProvider: runtime.sendingProvider,
+    instantlyApiKey: maskSecret(runtime.instantlyApiKey),
+    smartleadApiKey: maskSecret(runtime.smartleadApiKey),
+    smartleadCampaignId: runtime.smartleadCampaignId,
+    extraSmtpAccounts: runtime.extraSmtpAccounts,
+    whatsappPhoneNumberId: runtime.whatsappPhoneNumberId,
+    whatsappAccessToken: maskSecret(runtime.whatsappAccessToken),
+    whatsappBusinessId: runtime.whatsappBusinessId,
+    whatsappTemplateName: runtime.whatsappTemplateName,
+    whatsappTemplateLanguage: runtime.whatsappTemplateLanguage,
+    inboxWebhookSecret: maskSecret(runtime.inboxWebhookSecret),
     outreachRequireApproval: runtime.outreachRequireApproval,
     createLeadsFromInbox: Boolean(runtime.createLeadsFromInbox),
     outreachDailyLimit: runtime.outreachDailyLimit,
@@ -198,6 +246,16 @@ async function saveSettings(input) {
     senderProfession: String(input.senderProfession || "").trim(),
     senderEmail: String(input.senderEmail || "").trim(),
     senderWhatsapp: String(input.senderWhatsapp || "").trim(),
+    senderPostalAddress: String(input.senderPostalAddress || "").trim(),
+    sendingProvider: ["gmail", "instantly", "smartlead"].includes(input.sendingProvider)
+      ? input.sendingProvider
+      : "gmail",
+    smartleadCampaignId: String(input.smartleadCampaignId || "").trim(),
+    extraSmtpAccounts: String(input.extraSmtpAccounts || "").trim(),
+    whatsappPhoneNumberId: String(input.whatsappPhoneNumberId || "").trim(),
+    whatsappBusinessId: String(input.whatsappBusinessId || "").trim(),
+    whatsappTemplateName: String(input.whatsappTemplateName || "").trim(),
+    whatsappTemplateLanguage: String(input.whatsappTemplateLanguage || "en").trim() || "en",
     outreachRequireApproval: Boolean(input.outreachRequireApproval),
     createLeadsFromInbox: Boolean(input.createLeadsFromInbox),
     outreachDailyLimit: Number(input.outreachDailyLimit),
@@ -235,6 +293,7 @@ function senderSignature(settings) {
     lines.push(`WhatsApp: ${settings.senderWhatsapp}`);
     if (wa) lines.push(`https://wa.me/${wa}`);
   }
+  if (settings.senderPostalAddress) lines.push(settings.senderPostalAddress);
   return lines.join("\n");
 }
 

@@ -2,7 +2,8 @@ import { Lead } from "../../models/Lead.js";
 import { ScrapeJob } from "../../models/ScrapeJob.js";
 import { Campaign } from "../../models/Campaign.js";
 import { Suppression } from "../../models/Suppression.js";
-import { LEAD_STATUS, LEAD_SOURCE, JOB_STATUS, JOB_TYPES, EVENT_TYPES, PROJECT_TYPES } from "../../constants/index.js";
+import { Task } from "../../models/Task.js";
+import { LEAD_STATUS, LEAD_SOURCE, JOB_STATUS, JOB_TYPES, EVENT_TYPES, PROJECT_TYPES, TASK_STATUS } from "../../constants/index.js";
 import { normalizeProject } from "../leads/projects.js";
 import { isCompleteEmail, verifyEmail } from "../verification/emailVerify.js";
 import { decidePitch, verifyLead } from "./gemini.js";
@@ -10,7 +11,9 @@ import { snapshotWebsite } from "./websiteSnapshot.js";
 import { upsertLeadVector } from "./qdrantStore.js";
 import { enqueueJob, publishEvent } from "../../queues/streams.js";
 import { publishLive } from "../../live/publish.js";
-import { hasAiConfigured } from "../settings/settings.service.js";
+import { hasAiConfigured, getRuntimeSettings } from "../settings/settings.service.js";
+import { qualifyDecision } from "../outreach/policy.js";
+import { detectTimezone } from "../../utils/timezoneDetect.js";
 import { logger } from "../../utils/logger.js";
 
 async function isSuppressed(lead) {
@@ -32,7 +35,10 @@ async function bumpRejected(jobId, campaignId) {
 async function refreshJobCounts(jobId) {
   const [qualified, verified] = await Promise.all([
     Lead.countDocuments({ jobId, status: LEAD_STATUS.QUALIFIED }),
-    Lead.countDocuments({ jobId, status: { $in: [LEAD_STATUS.VERIFIED, LEAD_STATUS.QUALIFIED] } }),
+    Lead.countDocuments({
+      jobId,
+      status: { $in: [LEAD_STATUS.VERIFIED, LEAD_STATUS.QUALIFIED, LEAD_STATUS.HUMAN_REVIEW_REQUIRED] },
+    }),
   ]);
   const job = await ScrapeJob.findByIdAndUpdate(
     jobId,
@@ -45,7 +51,7 @@ async function refreshJobCounts(jobId) {
       "stats.qualified": await Lead.countDocuments({ campaignId: job.campaignId, status: LEAD_STATUS.QUALIFIED }),
       "stats.verified": await Lead.countDocuments({
         campaignId: job.campaignId,
-        status: { $in: [LEAD_STATUS.VERIFIED, LEAD_STATUS.QUALIFIED] },
+        status: { $in: [LEAD_STATUS.VERIFIED, LEAD_STATUS.QUALIFIED, LEAD_STATUS.HUMAN_REVIEW_REQUIRED] },
       }),
     },
   });
@@ -118,20 +124,24 @@ function fallbackPitch(leadLike, snapshot) {
 }
 
 async function applyPitch(leadLike) {
-  const snapshot = leadLike.hasWebsite && leadLike.website ? await snapshotWebsite(leadLike.website) : null;
+  const settings = await getRuntimeSettings().catch(() => ({}));
+  const snapshot =
+    leadLike.hasWebsite && leadLike.website
+      ? await snapshotWebsite(leadLike.website, { pagespeedKey: settings.googlePlacesApiKey })
+      : null;
   if (Date.now() >= aiCooldownUntil && (await hasAiConfigured())) {
     try {
       const pitch = await decidePitch(leadLike, snapshot);
       if (pitch.service === "booking_system" && snapshot?.hasBooking) {
-        return fallbackPitch(leadLike, snapshot);
+        return { pitch: fallbackPitch(leadLike, snapshot), snapshot };
       }
-      return pitch;
+      return { pitch, snapshot };
     } catch (error) {
       logger.warn({ err: error }, "pitch decision failed");
       if (isRateLimited(error)) aiCooldownUntil = Date.now() + 15 * 60 * 1000;
     }
   }
-  return fallbackPitch(leadLike, snapshot);
+  return { pitch: fallbackPitch(leadLike, snapshot), snapshot };
 }
 
 async function reviewCandidate(raw) {
@@ -146,15 +156,49 @@ async function reviewCandidate(raw) {
   }
   const emailVerification = await verifyEmail(raw.email);
   const analysis = await verifyLead(raw);
-  if (analysis.recommendedStatus === "invalid" || analysis.spamProbability >= 70) {
-    return { ok: false, reason: analysis.reason };
+  const decision = qualifyDecision(analysis);
+  if (!decision.ok) {
+    return { ok: false, reason: analysis.reason || "Lead rejected by score gate" };
   }
-  const status =
-    analysis.recommendedStatus === "qualified" && analysis.leadScore >= 70
-      ? LEAD_STATUS.QUALIFIED
-      : LEAD_STATUS.VERIFIED;
-  const pitch = await applyPitch(raw);
-  return { ok: true, status, emailVerification, analysis, pitch };
+  const { pitch, snapshot } = await applyPitch(raw);
+  return {
+    ok: true,
+    status: decision.status,
+    review: decision.review,
+    emailVerification,
+    analysis,
+    pitch,
+    websiteAudit: snapshot || {},
+    timezone: detectTimezone({
+      countryCode: raw.countryCode,
+      location: raw.location,
+      address: raw.address,
+    }),
+  };
+}
+
+async function queueQualifyReview(lead, reviewed) {
+  const open = await Task.findOne({
+    leadId: lead._id,
+    classification: "qualify_below_threshold",
+    status: { $in: [TASK_STATUS.OPEN, TASK_STATUS.WAITING_USER] },
+  });
+  const payload = {
+    title: `Qualify review: ${lead.businessName} (score ${lead.leadScore})`,
+    conversationSummary: reviewed.analysis?.reason || "",
+    clientRequirement: "",
+    aiInterpretation: reviewed.reason || `Score ${lead.leadScore} is below the auto-send gate.`,
+    proposedResponse: "",
+    neededFromUser: "Approve this lead for outreach or reject it. Auto-send is blocked until you approve.",
+    confidence: reviewed.analysis?.confidence || 0,
+    classification: "qualify_below_threshold",
+  };
+  if (open) {
+    Object.assign(open, payload);
+    await open.save();
+    return open;
+  }
+  return Task.create({ leadId: lead._id, ...payload });
 }
 
 async function processCandidateLead(payload) {
@@ -206,7 +250,12 @@ async function processCandidateLead(payload) {
       aiAnalysis: reviewed.analysis,
       emailVerification: reviewed.emailVerification,
       pitch: reviewed.pitch,
+      websiteAudit: reviewed.websiteAudit || {},
+      timezone: reviewed.timezone || "",
     });
+    if (reviewed.review) {
+      await queueQualifyReview(lead, reviewed);
+    }
     await ScrapeJob.findByIdAndUpdate(jobId, { $inc: { discoveredCount: 1, emailsFound: 1 } });
     const campaignInc = { "stats.discovered": 1, "stats.emailsFound": 1 };
     if (reviewed.emailVerification?.valid) campaignInc["stats.emailsVerified"] = 1;
@@ -243,9 +292,12 @@ async function processCreatedLead(leadId) {
   lead.aiAnalysis = reviewed.analysis;
   lead.emailVerification = reviewed.emailVerification;
   lead.pitch = reviewed.pitch;
+  lead.websiteAudit = reviewed.websiteAudit || {};
+  if (!lead.timezone) lead.timezone = reviewed.timezone || "";
   if (!lead.project) lead.project = normalizeProject(reviewed.pitch?.service, PROJECT_TYPES.NEW_WEBSITE);
   if (!lead.source) lead.source = LEAD_SOURCE.SCRAPE;
   await lead.save();
+  if (reviewed.review) await queueQualifyReview(lead, reviewed);
   try {
     await upsertLeadVector(lead.toObject());
   } catch (error) {
@@ -280,7 +332,7 @@ async function processPendingScrapedLeads() {
 
 async function processMissingPitches() {
   const pending = await Lead.find({
-    status: { $in: [LEAD_STATUS.VERIFIED, LEAD_STATUS.QUALIFIED] },
+    status: { $in: [LEAD_STATUS.VERIFIED, LEAD_STATUS.QUALIFIED, LEAD_STATUS.HUMAN_REVIEW_REQUIRED] },
     $or: [
       { "pitch.service": { $in: ["", null] } },
       { pitch: { $exists: false } },
@@ -292,7 +344,7 @@ async function processMissingPitches() {
   }).limit(8);
   for (const lead of pending) {
     try {
-      const pitch = await applyPitch(lead.toObject());
+      const { pitch } = await applyPitch(lead.toObject());
       if (!pitch?.service) continue;
       lead.pitch = pitch;
       await lead.save();

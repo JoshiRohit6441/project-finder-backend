@@ -50,6 +50,16 @@ const leadSchema = new mongoose.Schema(
     timezone: { type: String, default: "" },
     followUpCount: { type: Number, default: 0 },
     lastContactedAt: { type: Date },
+    firstContactedAt: { type: Date },
+    phoneVerified: { type: Boolean, default: false },
+    whatsappOptIn: { type: Boolean, default: false },
+    whatsappOptInAt: { type: Date },
+    whatsappWindowOpen: { type: Boolean, default: false },
+    preferredChannel: { type: String, default: "" },
+    consentAt: { type: Date },
+    lawfulBasis: { type: String, default: "" },
+    proposalSentAt: { type: Date },
+    websiteAudit: { type: mongoose.Schema.Types.Mixed, default: {} },
   },
   { timestamps: true }
 );

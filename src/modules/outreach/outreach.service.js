@@ -11,6 +11,7 @@ import { isCompleteEmail } from "../verification/emailVerify.js";
 import { sendMail } from "../mailbox/mailer.js";
 import { getActiveMailbox } from "../mailbox/mailbox.service.js";
 import { timezoneForCountry, nextBusinessTime, withSlotTable } from "../../utils/timezone.js";
+import { detectTimezone } from "../../utils/timezoneDetect.js";
 import { signUnsubscribe } from "../../utils/jwt.js";
 import { config } from "../../config/index.js";
 import { getRuntimeSettings, hasAiConfigured, withSenderBlock } from "../settings/settings.service.js";
@@ -18,6 +19,8 @@ import { publishEvent } from "../../queues/streams.js";
 import { publishLive } from "../../live/publish.js";
 import { sha256 } from "../../utils/crypto.js";
 import { httpError } from "../../utils/httpError.js";
+import { canFirstOutreach, canContinueOutreach, canColdEmail, chooseChannel, followUpOffsetDays, followUpAngle, withPostalFooter } from "./policy.js";
+import { sendWhatsApp } from "../whatsapp/whatsapp.service.js";
 
 const TERMINAL = new Set(TERMINAL_LEAD_STATUSES);
 
@@ -33,15 +36,28 @@ async function ensurePitch(lead) {
   return lead;
 }
 
-async function assertSendable(lead) {
-  if (!isCompleteEmail(lead.email)) throw httpError("Lead email is masked or incomplete", 422);
+async function assertSendable(lead, { firstTouch = false } = {}) {
+  const settings = await getRuntimeSettings();
+  const channel = chooseChannel(lead, settings);
+  if (channel === "email" && !isCompleteEmail(lead.email)) throw httpError("Lead email is masked or incomplete", 422);
+  if (channel === "whatsapp" && !String(lead.phone || "").replace(/\D/g, "")) {
+    throw httpError("Lead phone is missing for WhatsApp", 422);
+  }
   if (lead.suppressed || TERMINAL.has(lead.status)) {
     throw httpError("Lead is not eligible for outreach", 409);
   }
-  const suppressed = await Suppression.findOne({
-    $or: [{ type: "email", value: lead.email }, { type: "domain", value: lead.email.split("@")[1] }],
-  }).lean();
-  if (suppressed) throw httpError("Contact is suppressed", 409);
+  if (firstTouch) {
+    const consent = canColdEmail(lead);
+    if (!consent.ok) throw httpError(consent.reason, 409);
+  }
+  const gate = firstTouch ? canFirstOutreach(lead) : canContinueOutreach(lead);
+  if (!gate.ok) throw httpError(gate.reason, 409);
+  if (lead.email) {
+    const suppressed = await Suppression.findOne({
+      $or: [{ type: "email", value: lead.email }, { type: "domain", value: lead.email.split("@")[1] }],
+    }).lean();
+    if (suppressed) throw httpError("Contact is suppressed", 409);
+  }
 }
 
 async function getOrCreateThread(lead, account, subject) {
@@ -66,16 +82,22 @@ function withSender(body, settings) {
   return withSenderBlock(body, settings);
 }
 
-function withFooter(body, url) {
-  return `${body.trim()}\n\n---\nIf you prefer not to receive further emails, unsubscribe here: ${url}`;
+function withFooter(body, url, settings) {
+  return withPostalFooter(body, settings, url);
 }
 
 async function prepareOutreach(leadId) {
   const lead = await Lead.findById(leadId);
   if (!lead) throw httpError("Lead not found", 404);
-  await assertSendable(lead);
+  await assertSendable(lead, { firstTouch: true });
   await ensurePitch(lead);
-  if (!lead.timezone) lead.timezone = timezoneForCountry(lead.countryCode);
+  if (!lead.timezone) {
+    lead.timezone = detectTimezone({
+      countryCode: lead.countryCode,
+      location: lead.location,
+      address: lead.address,
+    }) || timezoneForCountry(lead.countryCode);
+  }
   const settings = await getRuntimeSettings();
   const account = await getActiveMailbox();
   const draft = (await hasAiConfigured())
@@ -132,21 +154,33 @@ async function sendStoredMessage(messageId, extras = {}) {
   if (!message) throw httpError("Message not found", 404);
   if (message.status === MESSAGE_STATUS.SENT) return message;
   const lead = await Lead.findById(message.leadId);
-  await assertSendable(lead);
+  await assertSendable(lead, { firstTouch: !lead.firstContactedAt && lead.status !== LEAD_STATUS.CONTACTED });
   const thread = await EmailThread.findById(message.threadId);
   const previous = await Message.find({ threadId: thread._id, status: MESSAGE_STATUS.SENT }).sort({ createdAt: 1 });
   const lastOutbound = [...previous].reverse().find((item) => item.direction === MESSAGE_DIRECTION.OUTBOUND);
   const refs = previous.map((item) => item.internetMessageId).filter(Boolean);
   const url = unsubscribeUrl(lead.email);
-  const result = await sendMail({
-    to: lead.email,
-    subject: message.subject,
-    text: withFooter(extras.body || message.bodyText, url),
-    inReplyTo: lastOutbound?.internetMessageId || "",
-    references: refs,
-    unsubscribeUrl: url,
-    ics: extras.ics,
-  });
+  const settings = await getRuntimeSettings();
+  const channel = extras.channel || chooseChannel(lead, settings);
+  const firstTouch = !lead.firstContactedAt;
+  const text = withFooter(extras.body || message.bodyText, url, settings);
+  let result;
+  if (channel === "whatsapp") {
+    result = await sendWhatsApp({ lead, bodyText: extras.body || message.bodyText, isFirstOutbound: firstTouch });
+    message.channel = "whatsapp";
+    message.to = lead.phone;
+  } else {
+    result = await sendMail({
+      to: lead.email,
+      subject: message.subject,
+      text,
+      inReplyTo: lastOutbound?.internetMessageId || "",
+      references: refs,
+      unsubscribeUrl: url,
+      ics: extras.ics,
+    });
+    message.channel = "email";
+  }
   message.status = result.rejected?.length ? MESSAGE_STATUS.FAILED : MESSAGE_STATUS.SENT;
   message.internetMessageId = result.messageId || "";
   message.sentAt = new Date();
@@ -156,8 +190,12 @@ async function sendStoredMessage(messageId, extras = {}) {
   thread.lastMessageAt = new Date();
   thread.lastDirection = MESSAGE_DIRECTION.OUTBOUND;
   await thread.save();
-  lead.status = LEAD_STATUS.CONTACTED;
+  if (![LEAD_STATUS.REPLIED, LEAD_STATUS.INTERESTED, LEAD_STATUS.AI_HANDLING, LEAD_STATUS.MEETING_SCHEDULED].includes(lead.status)) {
+    lead.status = LEAD_STATUS.CONTACTED;
+  }
   lead.lastContactedAt = new Date();
+  if (!lead.firstContactedAt) lead.firstContactedAt = lead.lastContactedAt;
+  lead.preferredChannel = message.channel || "email";
   await lead.save();
   await Campaign.findByIdAndUpdate(lead.campaignId, { $inc: { "stats.outreachSent": 1 } });
   await scheduleFollowUp(lead, thread);
@@ -182,8 +220,13 @@ async function scheduleFollowUp(lead, thread) {
     return null;
   }
   await FollowUp.updateMany({ leadId: lead._id, status: FOLLOWUP_STATUS.SCHEDULED }, { status: FOLLOWUP_STATUS.CANCELLED });
-  const timezone = lead.timezone || timezoneForCountry(lead.countryCode);
-  const raw = new Date(Date.now() + settings.followUpIntervalDays * 24 * 60 * 60 * 1000);
+  const timezone =
+    lead.timezone ||
+    detectTimezone({ countryCode: lead.countryCode, location: lead.location, address: lead.address }) ||
+    timezoneForCountry(lead.countryCode);
+  const attempt = lead.followUpCount + 1;
+  const origin = lead.firstContactedAt || lead.lastContactedAt || new Date();
+  const raw = new Date(new Date(origin).getTime() + followUpOffsetDays(attempt) * 24 * 60 * 60 * 1000);
   const nextAt = nextBusinessTime(raw, timezone);
   return FollowUp.create({
     leadId: lead._id,
@@ -203,7 +246,7 @@ async function processDueFollowUps() {
   const due = await FollowUp.find({ status: FOLLOWUP_STATUS.SCHEDULED, nextAt: { $lte: new Date() } }).limit(10);
   for (const item of due) {
     const lead = await Lead.findById(item.leadId);
-    if (!lead || TERMINAL.has(lead.status) || lead.status === LEAD_STATUS.REPLIED || lead.status === LEAD_STATUS.AI_HANDLING || lead.status === LEAD_STATUS.HUMAN_REVIEW_REQUIRED || lead.status === LEAD_STATUS.MEETING_SCHEDULED) {
+    if (!lead || TERMINAL.has(lead.status) || lead.status === LEAD_STATUS.REPLIED || lead.status === LEAD_STATUS.INTERESTED || lead.status === LEAD_STATUS.AI_HANDLING || lead.status === LEAD_STATUS.HUMAN_REVIEW_REQUIRED || lead.status === LEAD_STATUS.MEETING_SCHEDULED) {
       item.status = FOLLOWUP_STATUS.CANCELLED;
       await item.save();
       continue;
@@ -215,6 +258,7 @@ async function processDueFollowUps() {
         ? await generateFollowUp({
             lead: lead.toObject(),
             attempt: item.attempt,
+            angle: followUpAngle(item.attempt),
             salesContext: settings.salesContext,
             sender: {
               name: settings.senderName,

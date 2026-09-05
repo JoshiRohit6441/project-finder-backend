@@ -4,6 +4,8 @@ import { config } from "../../config/index.js";
 import { encrypt, decrypt } from "../../utils/crypto.js";
 import { httpError } from "../../utils/httpError.js";
 import { getRuntimeSettings } from "../settings/settings.service.js";
+import { warmupDailyLimit } from "../outreach/policy.js";
+import { getRedis } from "../../db/redis.js";
 
 async function oauthClient() {
   const settings = await getRuntimeSettings();
@@ -20,7 +22,6 @@ async function seedMailbox() {
   const existing = await EmailAccount.findOne({ email });
   const authType = settings.oauthClientId && existing?.encryptedRefreshToken ? "oauth" : "app_password";
   const secret = settings.gmailAppPassword ? encrypt(settings.gmailAppPassword) : existing?.encryptedSecret || "";
-  await EmailAccount.updateMany({ email: { $ne: email } }, { $set: { isActive: false } });
   if (existing) {
     existing.fromName = settings.gmailFromName;
     existing.dailyLimit = settings.outreachDailyLimit;
@@ -28,10 +29,12 @@ async function seedMailbox() {
     if (settings.gmailAppPassword) existing.encryptedSecret = secret;
     if (existing.authType !== "oauth") existing.authType = authType;
     existing.isActive = true;
+    if (!existing.warmupStartedAt) existing.warmupStartedAt = existing.createdAt || new Date();
     await existing.save();
+    await syncExtraMailboxes(settings);
     return existing;
   }
-  return EmailAccount.create({
+  const created = await EmailAccount.create({
     email,
     fromName: settings.gmailFromName,
     authType: "app_password",
@@ -39,7 +42,64 @@ async function seedMailbox() {
     dailyLimit: settings.outreachDailyLimit,
     hourlyLimit: settings.outreachHourlyLimit,
     isActive: true,
+    warmupStartedAt: new Date(),
+    provider: "gmail",
+    domain: email.split("@")[1] || "",
   });
+  await syncExtraMailboxes(settings);
+  return created;
+}
+
+async function syncExtraMailboxes(settings) {
+  const lines = String(settings.extraSmtpAccounts || "")
+    .split(/\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  for (const line of lines) {
+    const [boxEmail, password, daily] = line.split("|").map((item) => String(item || "").trim());
+    if (!boxEmail || !boxEmail.includes("@") || !password) continue;
+    const email = boxEmail.toLowerCase();
+    const existing = await EmailAccount.findOne({ email });
+    const payload = {
+      fromName: settings.gmailFromName,
+      authType: "app_password",
+      encryptedSecret: encrypt(password),
+      dailyLimit: Number(daily) || settings.outreachDailyLimit,
+      hourlyLimit: settings.outreachHourlyLimit,
+      isActive: true,
+      provider: "smtp",
+      domain: email.split("@")[1] || "",
+    };
+    if (existing) {
+      Object.assign(existing, payload);
+      if (!existing.warmupStartedAt) existing.warmupStartedAt = existing.createdAt || new Date();
+      await existing.save();
+    } else {
+      await EmailAccount.create({ email, warmupStartedAt: new Date(), ...payload });
+    }
+  }
+}
+
+async function dayCount(account) {
+  try {
+    const redis = getRedis();
+    const dayKey = `quota:day:${account._id}:${new Date().toISOString().slice(0, 10)}`;
+    return Number((await redis.get(dayKey)) || 0);
+  } catch {
+    return 0;
+  }
+}
+
+async function pickSendableAccount() {
+  await seedMailbox();
+  const accounts = await EmailAccount.find({ isActive: true }).sort({ lastUsedAt: 1, updatedAt: 1 });
+  if (!accounts.length) throw httpError("No active mailbox configured", 503);
+  for (const account of accounts) {
+    const cap = warmupDailyLimit(account.warmupStartedAt, account.dailyLimit);
+    const used = await dayCount(account);
+    if (used < cap) return account;
+  }
+  throw httpError("All mailboxes are at warmup or daily cap", 429);
 }
 
 async function getActiveMailbox() {
@@ -108,4 +168,4 @@ async function getOAuthAuth(account) {
   return client;
 }
 
-export { seedMailbox, getActiveMailbox, smtpAuth, getMailboxStatus, oauthUrl, handleOAuthCallback, getOAuthAuth };
+export { seedMailbox, getActiveMailbox, smtpAuth, getMailboxStatus, oauthUrl, handleOAuthCallback, getOAuthAuth, pickSendableAccount, syncExtraMailboxes };

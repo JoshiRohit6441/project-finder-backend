@@ -3,7 +3,9 @@ import { Campaign } from "../../models/Campaign.js";
 import { Message } from "../../models/Message.js";
 import { Task } from "../../models/Task.js";
 import { EmailThread } from "../../models/EmailThread.js";
-import { LEAD_STATUS, LEAD_SOURCE, REPLY_CLASS, HIGH_IMPACT_CLASSES, TASK_STATUS, MESSAGE_DIRECTION } from "../../constants/index.js";
+import { LEAD_STATUS, LEAD_SOURCE, REPLY_CLASS, TASK_STATUS, MESSAGE_DIRECTION } from "../../constants/index.js";
+import { shouldEscalate } from "../outreach/policy.js";
+import { detectTimezone } from "../../utils/timezoneDetect.js";
 import { classifyReply, generateReply } from "../ai/gemini.js";
 import { cancelFollowUps, suppressEmail, getOrCreateThread, sendStoredMessage } from "../outreach/outreach.service.js";
 import { getActiveMailbox } from "../mailbox/mailbox.service.js";
@@ -152,19 +154,33 @@ async function handleInbound(lead, inbound) {
   }
 
   if (analysis.classification === REPLY_CLASS.INTERESTED) {
+    lead.status = LEAD_STATUS.INTERESTED;
+    await lead.save();
     await Campaign.findByIdAndUpdate(lead.campaignId, { $inc: { "stats.positiveReplies": 1 } });
+  }
+
+  const detectedZone = detectTimezone({
+    countryCode: lead.countryCode,
+    location: lead.location,
+    address: lead.address,
+    text: inbound.bodyText,
+  });
+  if (detectedZone && detectedZone !== lead.timezone) {
+    lead.timezone = detectedZone;
+    await lead.save();
+  }
+  if (lead.preferredChannel === "whatsapp" || inbound.channel === "whatsapp") {
+    lead.whatsappWindowOpen = true;
+    await lead.save();
   }
 
   const booked = await tryBookChosenSlot(lead, inbound, history);
   if (booked) return booked;
 
   const settings = await getRuntimeSettings();
-  const needsHuman = settings.outreachRequireApproval
-    ? analysis.nextAction === "human_review" ||
-      analysis.highImpact ||
-      HIGH_IMPACT_CLASSES.has(analysis.classification) ||
-      analysis.confidence < 70
-    : false;
+  const needsHuman =
+    shouldEscalate(analysis, inbound.bodyText) ||
+    (settings.outreachRequireApproval && analysis.confidence < 70);
 
   if (needsHuman) {
     await createReviewTask(lead, inbound, analysis);
@@ -261,6 +277,7 @@ async function sendAiReply(lead, inbound, analysis = {}, history, extras = {}) {
   const inboundFirst =
     extras.stage === "inbound" ||
     (lead.source === LEAD_SOURCE.INBOUND && counts(threadHistory).outbound === 0 && !bookMeeting);
+  const keepInterested = lead.status === LEAD_STATUS.INTERESTED || analysis.classification === REPLY_CLASS.INTERESTED;
   lead.status = LEAD_STATUS.AI_HANDLING;
   await lead.save();
   if (!lead.timezone) {
@@ -302,7 +319,7 @@ async function sendAiReply(lead, inbound, analysis = {}, history, extras = {}) {
   body = withSender(body, settingsForSign);
   const draft = await createDraftReply(lead, inbound, body, subject, extras.idempotencyKey);
   await sendStoredMessage(draft._id);
-  lead.status = LEAD_STATUS.REPLIED;
+  lead.status = keepInterested ? LEAD_STATUS.INTERESTED : LEAD_STATUS.REPLIED;
   await lead.save();
   await Campaign.findByIdAndUpdate(lead.campaignId, { $inc: { "stats.aiHandled": 1 } });
   await Task.updateMany(
@@ -316,6 +333,14 @@ async function resolveTask(taskId, userNotes) {
   const task = await Task.findById(taskId);
   if (!task || task.status === TASK_STATUS.RESOLVED) {
     throw httpError("Task not found or already resolved", 404);
+  }
+  if (task.classification === "qualify_below_threshold") {
+    const { approveOutreach } = await import("../leads/lead.service.js");
+    const lead = await approveOutreach(String(task.leadId));
+    task.status = TASK_STATUS.RESOLVED;
+    task.userNotes = userNotes || "Approved for outreach";
+    await task.save();
+    return { task, lead, action: "approved_outreach" };
   }
   const lead = await Lead.findById(task.leadId);
   const inbound = task.messageId ? await Message.findById(task.messageId) : null;

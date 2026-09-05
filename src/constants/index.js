@@ -29,6 +29,7 @@ const LEAD_STATUS = Object.freeze({
   READY_FOR_OUTREACH: "ready_for_outreach",
   CONTACTED: "contacted",
   REPLIED: "replied",
+  INTERESTED: "interested",
   AI_HANDLING: "ai_handling",
   HUMAN_REVIEW_REQUIRED: "human_review_required",
   MEETING_SCHEDULED: "meeting_scheduled",

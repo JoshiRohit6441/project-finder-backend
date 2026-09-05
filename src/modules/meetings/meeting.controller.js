@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ok } from "../../utils/response.js";
-import { listMeetings, getSlots, scheduleMeeting, inviteGuests } from "./meeting.service.js";
+import { listMeetings, getSlots, scheduleMeeting, inviteGuests, completeMeeting } from "./meeting.service.js";
 import { writeAudit } from "../audit/audit.service.js";
 
 const listController = asyncHandler(async (req, res) => {
@@ -57,4 +57,21 @@ const inviteController = asyncHandler(async (req, res) => {
   return ok(res, data);
 });
 
-export { listController, slotsController, createController, inviteController };
+const completeSchema = z.object({
+  notes: z.string().optional().default(""),
+});
+
+const completeController = asyncHandler(async (req, res) => {
+  const body = completeSchema.parse(req.body || {});
+  const data = await completeMeeting(req.params.id, body.notes);
+  await writeAudit({
+    actorId: req.user.id,
+    action: "meeting.complete",
+    entityType: "meeting",
+    entityId: req.params.id,
+    ip: req.ip,
+  });
+  return ok(res, data);
+});
+
+export { listController, slotsController, createController, inviteController, completeController };

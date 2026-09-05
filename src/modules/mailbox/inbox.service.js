@@ -228,4 +228,22 @@ async function safePollInbox() {
   }
 }
 
-export { pollInbox, safePollInbox };
+async function ingestWebhookPayload(payload = {}) {
+  const account = await getActiveMailbox();
+  const from = String(payload.from || "").trim().toLowerCase();
+  const subject = String(payload.subject || "");
+  const text = String(payload.text || payload.body || "");
+  const messageId = String(payload.messageId || payload.internetMessageId || `hook-${Date.now()}`);
+  const parsed = {
+    from,
+    subject,
+    text,
+    html: payload.html || "",
+    messageId,
+    inReplyTo: payload.inReplyTo || "",
+    references: payload.references || [],
+  };
+  return ingestMessage(account, parsed, payload.uid || Date.now());
+}
+
+export { pollInbox, safePollInbox, ingestWebhookPayload };

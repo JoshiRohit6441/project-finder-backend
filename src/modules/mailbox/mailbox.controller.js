@@ -3,7 +3,9 @@ import { ok } from "../../utils/response.js";
 import { Message } from "../../models/Message.js";
 import { Lead } from "../../models/Lead.js";
 import { getActiveMailbox, getMailboxStatus, oauthUrl, handleOAuthCallback } from "./mailbox.service.js";
-import { safePollInbox } from "./inbox.service.js";
+import { safePollInbox, ingestWebhookPayload } from "./inbox.service.js";
+import { getRuntimeSettings } from "../settings/settings.service.js";
+import { httpError } from "../../utils/httpError.js";
 import { config } from "../../config/index.js";
 import { paginate } from "../../utils/query.js";
 
@@ -53,4 +55,14 @@ const messagesController = asyncHandler(async (req, res) => {
   });
 });
 
-export { statusController, oauthUrlController, oauthCallbackController, pollController, messagesController };
+const inboundWebhookController = asyncHandler(async (req, res) => {
+  const settings = await getRuntimeSettings();
+  const secret = settings.inboxWebhookSecret;
+  if (!secret) throw httpError("Inbox webhook is not configured", 503);
+  const provided = req.get("x-webhook-secret") || req.query.secret || req.body?.secret;
+  if (provided !== secret) throw httpError("Invalid webhook secret", 401);
+  const ingested = await ingestWebhookPayload(req.body || {});
+  return ok(res, { ingested: Boolean(ingested), messageId: ingested?._id || null });
+});
+
+export { statusController, oauthUrlController, oauthCallbackController, pollController, messagesController, inboundWebhookController };

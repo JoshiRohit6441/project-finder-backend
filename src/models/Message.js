@@ -22,6 +22,7 @@ const messageSchema = new mongoose.Schema(
     error: { type: String, default: "" },
     sentAt: { type: Date },
     bounceReason: { type: String, default: "" },
+    channel: { type: String, enum: ["email", "whatsapp"], default: "email" },
   },
   { timestamps: true }
 );

@@ -17,6 +17,10 @@ export const API_CATALOG = [
   { method: "GET", path: "/api/tasks", auth: true, description: "Human review queue" },
   { method: "GET", path: "/api/meetings", auth: true, description: "Suggested and booked meetings" },
   { method: "POST", path: "/api/public/unsubscribe", auth: false, description: "Public unsubscribe" },
+  { method: "POST", path: "/api/mailbox/inbound-webhook", auth: false, description: "Inbox push webhook" },
+  { method: "POST", path: "/api/leads/:id/approve-outreach", auth: true, description: "Approve a below-threshold lead" },
+  { method: "PATCH", path: "/api/leads/:id/status", auth: true, description: "Mark won, lost, or interested" },
+  { method: "POST", path: "/api/leads/:id/proposal", auth: true, description: "Send post-meeting proposal" },
   { method: "GET", path: "/api/live/stream", auth: true, description: "SSE live job and lead events" },
 ];
 

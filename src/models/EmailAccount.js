@@ -13,7 +13,11 @@ const emailAccountSchema = new mongoose.Schema(
     hourlyLimit: { type: Number, default: 8 },
     lastImapUid: { type: Number, default: 0 },
     lastSyncAt: { type: Date },
+    lastUsedAt: { type: Date },
     isActive: { type: Boolean, default: true },
+    provider: { type: String, enum: ["gmail", "smtp", "instantly", "smartlead"], default: "gmail" },
+    domain: { type: String, default: "" },
+    warmupStartedAt: { type: Date },
   },
   { timestamps: true }
 );

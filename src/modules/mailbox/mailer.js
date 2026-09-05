@@ -1,8 +1,10 @@
 import nodemailer from "nodemailer";
 import { google } from "googleapis";
-import { getActiveMailbox, smtpAuth, getOAuthAuth } from "./mailbox.service.js";
+import { getActiveMailbox, smtpAuth, getOAuthAuth, pickSendableAccount } from "./mailbox.service.js";
 import { getRedis } from "../../db/redis.js";
 import { getRuntimeSettings } from "../settings/settings.service.js";
+import { sendViaEsp } from "./esp.js";
+import { warmupDailyLimit } from "../outreach/policy.js";
 import { httpError } from "../../utils/httpError.js";
 import { logger } from "../../utils/logger.js";
 
@@ -14,14 +16,19 @@ async function checkQuota(account) {
   const [hour, day] = await Promise.all([redis.incr(hourKey), redis.incr(dayKey)]);
   if (hour === 1) await redis.expire(hourKey, 3600);
   if (day === 1) await redis.expire(dayKey, 86400);
-  if (hour > account.hourlyLimit || day > account.dailyLimit) {
+  const dayCap = warmupDailyLimit(account.warmupStartedAt, account.dailyLimit);
+  if (hour > account.hourlyLimit || day > dayCap) {
     await Promise.all([redis.decr(hourKey), redis.decr(dayKey)]);
     throw httpError("Sending quota reached", 429);
   }
 }
 
 async function sendMail({ to, subject, text, inReplyTo, references, unsubscribeUrl, ics }) {
-  const account = await getActiveMailbox();
+  const settings = await getRuntimeSettings();
+  const viaEsp = await sendViaEsp(settings, { to, subject, text });
+  if (viaEsp) return { ...viaEsp, account: { email: settings.senderEmail || settings.gmailUser, fromName: settings.gmailFromName } };
+
+  const account = await pickSendableAccount();
   await checkQuota(account);
   const from = `"${account.fromName}" <${account.email}>`;
   const headers = {};
@@ -62,6 +69,8 @@ async function sendMail({ to, subject, text, inReplyTo, references, unsubscribeU
     transporter = nodemailer.createTransport({ service: "gmail", auth: smtpAuth(account) });
   }
   const result = await transporter.sendMail(mail);
+  account.lastUsedAt = new Date();
+  await account.save();
   return { account, messageId: result.messageId, accepted: result.accepted, rejected: result.rejected };
 }
 

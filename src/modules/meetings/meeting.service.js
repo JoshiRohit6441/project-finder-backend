@@ -4,6 +4,7 @@ import { Campaign } from "../../models/Campaign.js";
 import { Message } from "../../models/Message.js";
 import { LEAD_STATUS, MEETING_STATUS, MESSAGE_DIRECTION, MESSAGE_STATUS } from "../../constants/index.js";
 import { timezoneForCountry, suggestSlots, buildIcs } from "../../utils/timezone.js";
+import { detectTimezone } from "../../utils/timezoneDetect.js";
 import { createCalendarEvent, sendMail, addCalendarAttendees } from "../mailbox/mailer.js";
 import { cancelFollowUps, getOrCreateThread } from "../outreach/outreach.service.js";
 import { getActiveMailbox } from "../mailbox/mailbox.service.js";
@@ -31,7 +32,10 @@ async function listMeetings({ page = 1, limit = 20, leadId }) {
 async function getSlots(leadId) {
   const lead = await Lead.findById(leadId);
   if (!lead) throw httpError("Lead not found", 404);
-  const timezone = lead.timezone || timezoneForCountry(lead.countryCode);
+  const timezone =
+    lead.timezone ||
+    detectTimezone({ countryCode: lead.countryCode, location: lead.location, address: lead.address }) ||
+    timezoneForCountry(lead.countryCode);
   return { timezone, slots: suggestSlots(timezone) };
 }
 
@@ -50,7 +54,11 @@ async function scheduleMeeting({ leadId, startAt, endAt, notes, skipEmail = fals
     keep.startAt = startAt;
     keep.endAt = endAt;
     keep.notes = notes || keep.notes;
-    keep.timezone = lead.timezone || timezoneForCountry(lead.countryCode) || keep.timezone;
+    keep.timezone =
+      lead.timezone ||
+      detectTimezone({ countryCode: lead.countryCode, location: lead.location, address: lead.address }) ||
+      timezoneForCountry(lead.countryCode) ||
+      keep.timezone;
     await keep.save();
     lead.status = LEAD_STATUS.MEETING_SCHEDULED;
     await lead.save();
@@ -58,7 +66,10 @@ async function scheduleMeeting({ leadId, startAt, endAt, notes, skipEmail = fals
     if (lead.email && !skipEmail) await sendMeetingInvite(keep._id);
     return keep;
   }
-  const timezone = lead.timezone || timezoneForCountry(lead.countryCode);
+  const timezone =
+    lead.timezone ||
+    detectTimezone({ countryCode: lead.countryCode, location: lead.location, address: lead.address }) ||
+    timezoneForCountry(lead.countryCode);
   const title = `Intro call with ${lead.businessName}`;
   const calendar = await createCalendarEvent({
     title,
@@ -229,4 +240,14 @@ async function inviteGuests(meetingId, emails) {
   };
 }
 
-export { listMeetings, getSlots, scheduleMeeting, sendMeetingInvite, ensureMeetLink, inviteGuests };
+async function completeMeeting(meetingId, notes = "") {
+  const meeting = await Meeting.findById(meetingId);
+  if (!meeting) throw httpError("Meeting not found", 404);
+  meeting.status = MEETING_STATUS.COMPLETED;
+  if (notes) meeting.notes = `${meeting.notes || ""}\n${notes}`.trim();
+  await meeting.save();
+  await publishLive("leads", { meetingId: String(meeting._id), completed: true });
+  return meeting;
+}
+
+export { listMeetings, getSlots, scheduleMeeting, sendMeetingInvite, ensureMeetLink, inviteGuests, completeMeeting };

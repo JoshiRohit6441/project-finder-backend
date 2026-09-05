@@ -7,12 +7,14 @@ import {
   oauthCallbackController,
   pollController,
   messagesController,
+  inboundWebhookController,
 } from "./mailbox.controller.js";
 
 const router = express.Router();
 const secured = protectedRouter(ROLES.ADMIN, ROLES.MANAGER);
 
 router.get("/oauth/callback", oauthCallbackController);
+router.post("/inbound-webhook", inboundWebhookController);
 secured.get("/status", statusController);
 secured.get("/messages", messagesController);
 secured.get("/oauth/url", oauthUrlController);
