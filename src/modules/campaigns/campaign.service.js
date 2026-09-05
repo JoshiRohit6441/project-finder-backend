@@ -8,19 +8,19 @@ import { publishLive } from "../../live/publish.js";
 import { httpError } from "../../utils/httpError.js";
 import { paginate } from "../../utils/query.js";
 import { sha256 } from "../../utils/crypto.js";
-
-function emailFilters(filters = {}) {
-  return { ...filters, requireEmail: true };
-}
+import { campaignFilters } from "./campaign.filters.js";
 
 async function createCampaign(payload, userId) {
+  const outreachMode = payload.outreachMode === "whatsapp" ? "whatsapp" : "email";
+  const filters = campaignFilters(payload.filters, outreachMode);
   const campaign = await Campaign.create({
     name: payload.name,
     project: PROJECT_TYPES.OTHER,
     status: CAMPAIGN_STATUS.ACTIVE,
+    outreachMode,
     countries: payload.countries,
     categories: payload.categories,
-    filters: emailFilters(payload.filters),
+    filters,
     maxScrapeLimit: payload.maxScrapeLimit,
     createdBy: userId,
   });
@@ -36,7 +36,8 @@ async function createCampaign(payload, userId) {
       targetCount: item.targetCount,
       maxScrapeLimit: payload.maxScrapeLimit,
       categories: payload.categories,
-      filters: emailFilters(payload.filters),
+      filters,
+      outreachMode,
       status: JOB_STATUS.QUEUED,
     }))
   );
@@ -108,7 +109,8 @@ async function createManualCampaign(name, userId, project = PROJECT_TYPES.NEW_WE
     status: CAMPAIGN_STATUS.ACTIVE,
     countries: [{ country: "India", countryCode: "IN", targetCount: 1, location: "" }],
     categories: ["website"],
-    filters: { requireEmail: true, minRating: 0, minReviews: 0, excludeWithWebsite: false, requirePhone: false },
+    outreachMode: "email",
+    filters: { minRating: 0, minReviews: 0, outreachMode: "email" },
     maxScrapeLimit: 1,
     createdBy: userId,
   });

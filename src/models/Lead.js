@@ -67,6 +67,8 @@ const leadSchema = new mongoose.Schema(
     whatsappOptInAt: { type: Date },
     whatsappWindowOpen: { type: Boolean, default: false },
     preferredChannel: { type: String, default: "" },
+    outreachMode: { type: String, default: "email" },
+    needsContact: { type: Boolean, default: false },
     consentAt: { type: Date },
     lawfulBasis: { type: String, default: "" },
     proposalSentAt: { type: Date },

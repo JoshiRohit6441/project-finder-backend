@@ -69,6 +69,11 @@ const CAMPAIGN_KIND = Object.freeze({
   INBOUND: "inbound",
 });
 
+const OUTREACH_MODES = Object.freeze({
+  EMAIL: "email",
+  WHATSAPP: "whatsapp",
+});
+
 const TERMINAL_LEAD_STATUSES = Object.freeze([
   LEAD_STATUS.UNSUBSCRIBED,
   LEAD_STATUS.NOT_INTERESTED,
@@ -170,6 +175,7 @@ export {
   ROLES,
   CAMPAIGN_STATUS,
   CAMPAIGN_KIND,
+  OUTREACH_MODES,
   JOB_STATUS,
   LEAD_STATUS,
   LEAD_SOURCE,

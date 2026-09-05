@@ -100,14 +100,40 @@ function canColdEmail(lead = {}) {
   };
 }
 
+function hasUsablePhone(phone) {
+  return String(phone || "").replace(/\D/g, "").length >= 8;
+}
+
+function hasUsableEmail(email) {
+  const value = String(email || "").trim();
+  return value.includes("@") && !/[*#\[\]{}<>]/.test(value);
+}
+
 function chooseChannel(lead = {}, settings = {}) {
-  const phoneOk = Boolean(lead.phoneVerified && String(lead.phone || "").replace(/\D/g, "").length >= 8);
-  const optIn = Boolean(lead.whatsappOptIn);
+  const preferred = String(lead.outreachMode || "").toLowerCase();
+  const emailOk = hasUsableEmail(lead.email);
+  const phoneOk = hasUsablePhone(lead.phone);
   const waReady = Boolean(
     settings.whatsappPhoneNumberId && settings.whatsappAccessToken && settings.whatsappTemplateName
   );
-  if (phoneOk && optIn && waReady) return "whatsapp";
+  if (preferred === "whatsapp") {
+    if (phoneOk && waReady) return "whatsapp";
+    if (emailOk) return "email";
+    return "none";
+  }
+  if (preferred === "email") {
+    if (emailOk) return "email";
+    if (phoneOk && waReady && lead.whatsappOptIn) return "whatsapp";
+    return "none";
+  }
+  if (phoneOk && lead.whatsappOptIn && waReady) return "whatsapp";
   return "email";
+}
+
+function missingContact(lead = {}) {
+  const mode = String(lead.outreachMode || "email").toLowerCase();
+  if (mode === "whatsapp") return !hasUsablePhone(lead.phone);
+  return !hasUsableEmail(lead.email);
 }
 
 function whatsappSendMode(lead = {}, isFirstOutbound = true) {
@@ -169,6 +195,9 @@ export {
   requiresConsent,
   canColdEmail,
   chooseChannel,
+  missingContact,
+  hasUsablePhone,
+  hasUsableEmail,
   whatsappSendMode,
   shouldEscalate,
   followUpOffsetDays,

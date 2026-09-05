@@ -49,8 +49,14 @@ def inc_campaign(campaign_id, fields):
     get_db()["campaigns"].update_one({"_id": to_id(campaign_id)}, {"$inc": fields})
 
 
-def lead_exists(fingerprint):
-    return get_db()["leads"].find_one({"fingerprint": fingerprint}, {"_id": 1})
+def lead_exists(fingerprint, place_id="", phone=""):
+    clauses = [{"fingerprint": fingerprint}]
+    if place_id:
+        clauses.append({"sourcePlaceId": place_id})
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    if len(digits) >= 8:
+        clauses.append({"phone": phone})
+    return get_db()["leads"].find_one({"$or": clauses}, {"_id": 1})
 
 
 def insert_lead(doc):

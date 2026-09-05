@@ -4,7 +4,8 @@ import { Meeting } from "../../models/Meeting.js";
 import { Campaign } from "../../models/Campaign.js";
 import { Message } from "../../models/Message.js";
 import { LEAD_STATUS, TASK_STATUS, MEETING_STATUS, MESSAGE_DIRECTION, MESSAGE_STATUS } from "../../constants/index.js";
-import { QUALIFY_SCORE } from "../outreach/policy.js";
+import { QUALIFY_SCORE, missingContact } from "../outreach/policy.js";
+import { isCompleteEmail, verifyEmail } from "../verification/emailVerify.js";
 import { httpError } from "../../utils/httpError.js";
 import { paginate } from "../../utils/query.js";
 import { cancelFollowUps, getOrCreateThread, sendStoredMessage } from "../outreach/outreach.service.js";
@@ -16,10 +17,11 @@ import { publishLive } from "../../live/publish.js";
 
 const CLOSE_STATUSES = new Set([LEAD_STATUS.WON, LEAD_STATUS.LOST, LEAD_STATUS.NOT_INTERESTED]);
 
-async function listLeads({ page = 1, limit = 20, status, campaignId, countryCode, q }) {
+async function listLeads({ page = 1, limit = 20, status, campaignId, countryCode, q, needsContact }) {
   const filter = {};
   if (status) filter.status = status;
   if (campaignId) filter.campaignId = campaignId;
+  if (needsContact === true || needsContact === "true") filter.needsContact = true;
   if (countryCode) filter.countryCode = String(countryCode).toUpperCase();
   if (q) {
     filter.$or = [
@@ -93,6 +95,33 @@ async function updateLeadFlags(id, flags = {}) {
   return lead;
 }
 
+async function updateLeadContact(id, input = {}) {
+  const lead = await Lead.findById(id);
+  if (!lead) throw httpError("Lead not found", 404);
+  if (input.email != null) {
+    lead.email = String(input.email || "").trim().toLowerCase();
+    lead.emailVerification = isCompleteEmail(lead.email)
+      ? await verifyEmail(lead.email)
+      : { syntax: false, domain: false, mx: false, risk: "missing", valid: false, checkedAt: new Date() };
+  }
+  if (input.phone != null) {
+    lead.phone = String(input.phone || "").trim();
+    lead.phoneVerified = String(lead.phone).replace(/\D/g, "").length >= 8;
+  }
+  if (input.whatsappOptIn != null) {
+    lead.whatsappOptIn = Boolean(input.whatsappOptIn);
+    lead.whatsappOptInAt = lead.whatsappOptIn ? new Date() : null;
+  }
+  const wasMissing = lead.needsContact;
+  lead.needsContact = missingContact(lead);
+  await lead.save();
+  if (wasMissing && !lead.needsContact) {
+    await Campaign.findByIdAndUpdate(lead.campaignId, { $inc: { "stats.needsContact": -1 } });
+  }
+  await publishLive("leads", { leadId: String(lead._id), contact: true });
+  return lead;
+}
+
 async function sendProposal(id, notes = "") {
   const lead = await Lead.findById(id);
   if (!lead) throw httpError("Lead not found", 404);
@@ -146,4 +175,4 @@ async function sendProposal(id, notes = "") {
   return { lead, message };
 }
 
-export { listLeads, getLead, approveOutreach, updateLeadStatus, updateLeadFlags, sendProposal };
+export { listLeads, getLead, approveOutreach, updateLeadStatus, updateLeadFlags, updateLeadContact, sendProposal };

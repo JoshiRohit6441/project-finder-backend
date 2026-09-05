@@ -19,7 +19,7 @@ import { publishEvent } from "../../queues/streams.js";
 import { publishLive } from "../../live/publish.js";
 import { sha256 } from "../../utils/crypto.js";
 import { httpError } from "../../utils/httpError.js";
-import { canFirstOutreach, canContinueOutreach, canColdEmail, chooseChannel, followUpOffsetDays, followUpAngle, withPostalFooter } from "./policy.js";
+import { canFirstOutreach, canContinueOutreach, canColdEmail, chooseChannel, followUpOffsetDays, followUpAngle, withPostalFooter, hasUsablePhone } from "./policy.js";
 import { sendWhatsApp } from "../whatsapp/whatsapp.service.js";
 
 const TERMINAL = new Set(TERMINAL_LEAD_STATUSES);
@@ -39,14 +39,21 @@ async function ensurePitch(lead) {
 async function assertSendable(lead, { firstTouch = false } = {}) {
   const settings = await getRuntimeSettings();
   const channel = chooseChannel(lead, settings);
+  if (channel === "none") {
+    throw httpError("Call this lead and add a WhatsApp number or email first", 422);
+  }
   if (channel === "email" && !isCompleteEmail(lead.email)) throw httpError("Lead email is masked or incomplete", 422);
-  if (channel === "whatsapp" && !String(lead.phone || "").replace(/\D/g, "")) {
-    throw httpError("Lead phone is missing for WhatsApp", 422);
+  if (channel === "whatsapp") {
+    if (!hasUsablePhone(lead.phone)) throw httpError("Lead phone is missing for WhatsApp", 422);
+    if (!lead.whatsappOptIn) throw httpError("Mark WhatsApp opt-in after they agree on the call", 422);
+    if (!settings.whatsappPhoneNumberId || !settings.whatsappAccessToken || !settings.whatsappTemplateName) {
+      throw httpError("WhatsApp is not configured in Settings", 422);
+    }
   }
   if (lead.suppressed || TERMINAL.has(lead.status)) {
     throw httpError("Lead is not eligible for outreach", 409);
   }
-  if (firstTouch) {
+  if (firstTouch && channel === "email") {
     const consent = canColdEmail(lead);
     if (!consent.ok) throw httpError(consent.reason, 409);
   }
@@ -99,6 +106,7 @@ async function prepareOutreach(leadId) {
     }) || timezoneForCountry(lead.countryCode);
   }
   const settings = await getRuntimeSettings();
+  const channel = chooseChannel(lead, settings);
   const account = await getActiveMailbox();
   const draft = (await hasAiConfigured())
     ? await generateOutreach({
@@ -130,7 +138,8 @@ async function prepareOutreach(leadId) {
     direction: MESSAGE_DIRECTION.OUTBOUND,
     status: MESSAGE_STATUS.DRAFT,
     from: account.email,
-    to: lead.email,
+    to: channel === "whatsapp" ? lead.phone : lead.email,
+    channel: channel === "whatsapp" ? "whatsapp" : "email",
     subject: draft.subject,
     bodyText: draft.body,
     idempotencyKey: key,

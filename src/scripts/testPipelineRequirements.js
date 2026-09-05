@@ -3,6 +3,7 @@ import {
   canFirstOutreach,
   canColdEmail,
   chooseChannel,
+  missingContact,
   whatsappSendMode,
   shouldEscalate,
   followUpOffsetDays,
@@ -14,6 +15,7 @@ import {
 import { analyzeHtml, scoreFromSignals, extractSocials } from "../modules/ai/websiteSnapshot.js";
 import { suggestApproaches } from "../modules/ai/suggestApproaches.js";
 import { detectTimezone } from "../utils/timezoneDetect.js";
+import { campaignFilters } from "../modules/campaigns/campaign.filters.js";
 
 let failed = 0;
 function assert(name, cond) {
@@ -153,6 +155,21 @@ const smo = suggestApproaches(
   { ssl: true, mobileFriendly: true, speedScore: 80, seoScore: 80, hasTitle: true, hasMetaDescription: true, hasH1: true, hasCanonical: true, socialCount: 0, socials: {}, hasGoogleAds: true, hasGoogleAnalytics: true, hasMetaPixel: true, hasBooking: false }
 );
 assert("clinic without booking gets booking or smo", smo.some((item) => item.service === "booking_system" || item.service === "smo"));
+const modeFilters = campaignFilters({ minRating: 4, minReviews: 5 }, "whatsapp");
+assert("campaign mode is whatsapp", modeFilters.outreachMode === "whatsapp" && modeFilters.minRating === 4);
+assert(
+  "whatsapp campaign with phone uses whatsapp",
+  chooseChannel(
+    { outreachMode: "whatsapp", phone: "+919876543210" },
+    { whatsappPhoneNumberId: "1", whatsappAccessToken: "t", whatsappTemplateName: "hello" }
+  ) === "whatsapp"
+);
+assert(
+  "email campaign without email needs a call",
+  chooseChannel({ outreachMode: "email", phone: "+919876543210" }, {}) === "none"
+);
+assert("missing email in email mode", missingContact({ outreachMode: "email", email: "" }) === true);
+assert("missing phone in whatsapp mode", missingContact({ outreachMode: "whatsapp", phone: "" }) === true);
 
 if (failed) {
   console.error(`\n${failed} failed`);

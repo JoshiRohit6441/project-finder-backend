@@ -13,7 +13,7 @@ import { upsertLeadVector } from "./qdrantStore.js";
 import { enqueueJob, publishEvent } from "../../queues/streams.js";
 import { publishLive } from "../../live/publish.js";
 import { hasAiConfigured, getRuntimeSettings } from "../settings/settings.service.js";
-import { qualifyDecision } from "../outreach/policy.js";
+import { qualifyDecision, missingContact } from "../outreach/policy.js";
 import { detectTimezone } from "../../utils/timezoneDetect.js";
 import { logger } from "../../utils/logger.js";
 
@@ -27,9 +27,15 @@ async function isSuppressed(lead) {
   return Boolean(found);
 }
 
-async function bumpRejected(jobId, campaignId) {
-  if (jobId) await ScrapeJob.findByIdAndUpdate(jobId, { $inc: { rejectedCount: 1 } });
-  if (campaignId) await Campaign.findByIdAndUpdate(campaignId, { $inc: { "stats.rejected": 1 } });
+async function bumpRejected(jobId, campaignId, reason = "ai_rejected") {
+  const jobInc = { rejectedCount: 1 };
+  const campaignInc = { "stats.rejected": 1 };
+  if (reason) {
+    jobInc[`rejectReasons.${reason}`] = 1;
+    campaignInc[`stats.rejectReasons.${reason}`] = 1;
+  }
+  if (jobId) await ScrapeJob.findByIdAndUpdate(jobId, { $inc: jobInc });
+  if (campaignId) await Campaign.findByIdAndUpdate(campaignId, { $inc: campaignInc });
   if (jobId) await publishLive("jobs", { jobId: String(jobId) });
 }
 
@@ -114,21 +120,28 @@ async function applyPitch(leadLike) {
   return { pitch: withApproaches(fallbackPitch(leadLike, snapshot), leadLike, snapshot), snapshot };
 }
 
+function hasUsablePhone(phone) {
+  return String(phone || "").replace(/\D/g, "").length >= 8;
+}
+
 async function reviewCandidate(raw) {
-  if (!isCompleteEmail(raw.email)) {
-    return { ok: false, reason: "Email is masked or incomplete" };
+  const emailOk = isCompleteEmail(raw.email);
+  if (!raw.businessName) {
+    return { ok: false, reason: "no_name" };
   }
   if (await isSuppressed(raw)) {
-    return { ok: false, reason: "Contact is on the suppression list" };
+    return { ok: false, reason: "suppressed" };
   }
   if (!(await hasAiConfigured())) {
-    return { ok: false, reason: "Verification unavailable" };
+    return { ok: false, reason: "no_ai" };
   }
-  const emailVerification = await verifyEmail(raw.email);
+  const emailVerification = emailOk
+    ? await verifyEmail(raw.email)
+    : { syntax: false, domain: false, mx: false, risk: "missing", valid: false, checkedAt: new Date() };
   const analysis = await verifyLead(raw);
   const decision = qualifyDecision(analysis);
   if (!decision.ok) {
-    return { ok: false, reason: analysis.reason || "Lead rejected by score gate" };
+    return { ok: false, reason: "ai_rejected" };
   }
   const { pitch, snapshot } = await applyPitch(raw);
   return {
@@ -180,19 +193,27 @@ async function processCandidateLead(payload) {
   if (await Lead.findOne({ fingerprint: raw.fingerprint }).select("_id")) {
     return;
   }
+  if (raw.sourcePlaceId && (await Lead.findOne({ sourcePlaceId: raw.sourcePlaceId }).select("_id"))) {
+    return;
+  }
 
   const reviewed = await reviewCandidate(raw);
   if (!reviewed.ok) {
-    await bumpRejected(jobId, campaignId);
+    await bumpRejected(jobId, campaignId, reviewed.reason || "ai_rejected");
     return;
   }
 
   const project = normalizeProject(reviewed.pitch?.service, PROJECT_TYPES.OTHER);
+  const campaign = await Campaign.findById(campaignId).select("outreachMode").lean();
+  const outreachMode = raw.outreachMode || campaign?.outreachMode || "email";
+  const needsContactFlag = missingContact({ ...raw, outreachMode });
 
   try {
     const lead = await Lead.create({
       campaignId,
       jobId,
+      outreachMode,
+      needsContact: needsContactFlag,
       businessName: raw.businessName,
       category: raw.category || "",
       country: raw.country || "",
@@ -203,8 +224,9 @@ async function processCandidateLead(payload) {
       reviewCount: raw.reviewCount || 0,
       hasWebsite: Boolean(raw.hasWebsite),
       website: raw.website || "",
-      email: raw.email,
+      email: raw.email || "",
       phone: raw.phone || "",
+      phoneVerified: hasUsablePhone(raw.phone),
       sourceUrl: raw.sourceUrl || "",
       sourcePlaceId: raw.sourcePlaceId || "",
       socials: raw.socials || {},
@@ -227,9 +249,15 @@ async function processCandidateLead(payload) {
     if (reviewed.review) {
       await queueQualifyReview(lead, reviewed);
     }
-    await ScrapeJob.findByIdAndUpdate(jobId, { $inc: { discoveredCount: 1, emailsFound: 1 } });
-    const campaignInc = { "stats.discovered": 1, "stats.emailsFound": 1 };
+    const jobInc = { discoveredCount: 1 };
+    const campaignInc = { "stats.discovered": 1 };
+    if (isCompleteEmail(raw.email)) {
+      jobInc.emailsFound = 1;
+      campaignInc["stats.emailsFound"] = 1;
+    }
+    if (needsContactFlag) campaignInc["stats.needsContact"] = 1;
     if (reviewed.emailVerification?.valid) campaignInc["stats.emailsVerified"] = 1;
+    await ScrapeJob.findByIdAndUpdate(jobId, { $inc: jobInc });
     await Campaign.findByIdAndUpdate(campaignId, { $inc: campaignInc });
     try {
       await upsertLeadVector(lead.toObject());

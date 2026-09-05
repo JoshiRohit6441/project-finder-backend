@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { CAMPAIGN_STATUS, CAMPAIGN_KIND, PROJECT_TYPES } from "../constants/index.js";
+import { CAMPAIGN_STATUS, CAMPAIGN_KIND, PROJECT_TYPES, OUTREACH_MODES } from "../constants/index.js";
 
 const countryQuotaSchema = new mongoose.Schema(
   {
@@ -21,12 +21,10 @@ const campaignSchema = new mongoose.Schema(
     status: { type: String, enum: Object.values(CAMPAIGN_STATUS), default: CAMPAIGN_STATUS.ACTIVE },
     countries: { type: [countryQuotaSchema], required: true },
     categories: { type: [String], default: [] },
+    outreachMode: { type: String, enum: Object.values(OUTREACH_MODES), default: OUTREACH_MODES.EMAIL },
     filters: {
       minRating: { type: Number, default: 0, min: 0, max: 5 },
       minReviews: { type: Number, default: 0, min: 0 },
-      excludeWithWebsite: { type: Boolean, default: false },
-      requireEmail: { type: Boolean, default: false },
-      requirePhone: { type: Boolean, default: false },
     },
     maxScrapeLimit: { type: Number, default: 200, min: 1 },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
@@ -47,6 +45,8 @@ const campaignSchema = new mongoose.Schema(
       humanReview: { type: Number, default: 0 },
       meetings: { type: Number, default: 0 },
       conversions: { type: Number, default: 0 },
+      needsContact: { type: Number, default: 0 },
+      rejectReasons: { type: mongoose.Schema.Types.Mixed, default: {} },
     },
   },
   { timestamps: true }

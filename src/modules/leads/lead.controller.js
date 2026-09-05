@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ok } from "../../utils/response.js";
-import { listLeads, getLead, approveOutreach, updateLeadStatus, updateLeadFlags, sendProposal } from "./lead.service.js";
+import { listLeads, getLead, approveOutreach, updateLeadStatus, updateLeadFlags, updateLeadContact, sendProposal } from "./lead.service.js";
 import { writeAudit } from "../audit/audit.service.js";
 
 const listLeadsController = asyncHandler(async (req, res) => {
@@ -12,6 +12,7 @@ const listLeadsController = asyncHandler(async (req, res) => {
     campaignId: req.query.campaignId,
     countryCode: req.query.countryCode,
     q: req.query.q,
+    needsContact: req.query.needsContact,
   });
   return ok(res, data);
 });
@@ -65,6 +66,26 @@ const flagsController = asyncHandler(async (req, res) => {
   return ok(res, data);
 });
 
+const contactSchema = z.object({
+  email: z.string().optional(),
+  phone: z.string().optional(),
+  whatsappOptIn: z.boolean().optional(),
+});
+
+const contactController = asyncHandler(async (req, res) => {
+  const body = contactSchema.parse(req.body || {});
+  const data = await updateLeadContact(req.params.id, body);
+  await writeAudit({
+    actorId: req.user.id,
+    action: "lead.contact",
+    entityType: "lead",
+    entityId: req.params.id,
+    metadata: { hasEmail: Boolean(body.email), hasPhone: Boolean(body.phone) },
+    ip: req.ip,
+  });
+  return ok(res, data);
+});
+
 const proposalSchema = z.object({
   notes: z.string().optional().default(""),
 });
@@ -82,4 +103,4 @@ const proposalController = asyncHandler(async (req, res) => {
   return ok(res, data);
 });
 
-export { listLeadsController, getLeadController, approveController, statusController, flagsController, proposalController };
+export { listLeadsController, getLeadController, approveController, statusController, flagsController, contactController, proposalController };
