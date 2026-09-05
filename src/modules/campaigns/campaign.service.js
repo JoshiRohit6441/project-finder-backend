@@ -16,7 +16,7 @@ function emailFilters(filters = {}) {
 async function createCampaign(payload, userId) {
   const campaign = await Campaign.create({
     name: payload.name,
-    project: normalizeProject(payload.project, PROJECT_TYPES.NEW_WEBSITE),
+    project: PROJECT_TYPES.OTHER,
     status: CAMPAIGN_STATUS.ACTIVE,
     countries: payload.countries,
     categories: payload.categories,
@@ -30,7 +30,9 @@ async function createCampaign(payload, userId) {
       campaignId: campaign._id,
       country: item.country,
       countryCode: item.countryCode,
-      location: item.location || "",
+      location: item.location || [item.city, item.state].filter(Boolean).join(", "),
+      state: item.state || "",
+      city: item.city || "",
       targetCount: item.targetCount,
       maxScrapeLimit: payload.maxScrapeLimit,
       categories: payload.categories,

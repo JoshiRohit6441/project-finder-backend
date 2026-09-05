@@ -6,14 +6,28 @@ const countryQuotaSchema = z.object({
   countryCode: z.string().min(2).max(3),
   targetCount: z.number().int().min(1).max(500),
   location: z.string().optional().default(""),
+  state: z.string().optional().default(""),
+  city: z.string().optional().default(""),
 });
 
 const createCampaignSchema = z.object({
   name: z.string().min(2).max(120),
   project: z
-    .enum(["new_website", "website_upgrade", "custom_web_app", "booking_system", "ecommerce", "other"])
+    .enum([
+      "new_website",
+      "website_upgrade",
+      "custom_web_app",
+      "booking_system",
+      "ecommerce",
+      "seo",
+      "smo",
+      "google_ads",
+      "meta_ads",
+      "it_services",
+      "other",
+    ])
     .optional()
-    .default(PROJECT_TYPES.NEW_WEBSITE),
+    .default(PROJECT_TYPES.OTHER),
   countries: z.array(countryQuotaSchema).min(1),
   categories: z.array(z.string().min(2)).min(1),
   filters: z

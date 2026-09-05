@@ -7,6 +7,8 @@ const countryQuotaSchema = new mongoose.Schema(
     countryCode: { type: String, required: true, uppercase: true, trim: true },
     targetCount: { type: Number, required: true, min: 1 },
     location: { type: String, trim: true, default: "" },
+    state: { type: String, trim: true, default: "" },
+    city: { type: String, trim: true, default: "" },
   },
   { _id: false }
 );

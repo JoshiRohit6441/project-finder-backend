@@ -11,7 +11,8 @@ import {
   withPostalFooter,
   QUALIFY_SCORE,
 } from "../modules/outreach/policy.js";
-import { analyzeHtml, scoreFromSignals } from "../modules/ai/websiteSnapshot.js";
+import { analyzeHtml, scoreFromSignals, extractSocials } from "../modules/ai/websiteSnapshot.js";
+import { suggestApproaches } from "../modules/ai/suggestApproaches.js";
 import { detectTimezone } from "../utils/timezoneDetect.js";
 
 let failed = 0;
@@ -129,6 +130,29 @@ assert("audit detects mobile viewport", audit.mobileFriendly === true);
 assert("audit detects booking", audit.hasBooking === true);
 assert("audit has speed score", audit.speedScore >= 70);
 assert("http loses SSL points", scoreFromSignals({ ttfbMs: 200, pageBytes: 1000, ssl: false, hasViewport: true }) < 90);
+
+const html = `
+<html><head>
+<title></title>
+<meta name="viewport" content="width=device-width">
+<script>fbq('init','123'); gtag('config','G-X');</script>
+</head><body>
+<a href="https://instagram.com/clinic">ig</a>
+<img src="a.jpg">
+</body></html>`;
+const socials = extractSocials(html);
+assert("extracts instagram", Boolean(socials.instagram));
+const weak = analyzeHtml(html, "http://clinic.example", 400, 10000);
+assert("detects missing title as SEO fail", weak.hasTitle === false);
+assert("detects no SSL", weak.ssl === false);
+assert("detects meta pixel", weak.hasMetaPixel === true);
+const noSite = suggestApproaches({ businessName: "Ria Dental", hasWebsite: false }, null);
+assert("no site primary is new website", noSite[0].service === "new_website");
+const smo = suggestApproaches(
+  { businessName: "Ria Dental", hasWebsite: true, website: "https://x.com", category: "dental clinic" },
+  { ssl: true, mobileFriendly: true, speedScore: 80, seoScore: 80, hasTitle: true, hasMetaDescription: true, hasH1: true, hasCanonical: true, socialCount: 0, socials: {}, hasGoogleAds: true, hasGoogleAnalytics: true, hasMetaPixel: true, hasBooking: false }
+);
+assert("clinic without booking gets booking or smo", smo.some((item) => item.service === "booking_system" || item.service === "smo"));
 
 if (failed) {
   console.error(`\n${failed} failed`);

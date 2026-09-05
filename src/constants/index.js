@@ -50,6 +50,11 @@ const PROJECT_TYPES = Object.freeze({
   CUSTOM_WEB_APP: "custom_web_app",
   BOOKING_SYSTEM: "booking_system",
   ECOMMERCE: "ecommerce",
+  SEO: "seo",
+  SMO: "smo",
+  GOOGLE_ADS: "google_ads",
+  META_ADS: "meta_ads",
+  IT_SERVICES: "it_services",
   OTHER: "other",
 });
 

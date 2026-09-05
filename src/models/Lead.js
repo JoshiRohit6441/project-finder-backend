@@ -38,6 +38,17 @@ const leadSchema = new mongoose.Schema(
       angle: { type: String, default: "" },
       talkingPoints: { type: [String], default: [] },
     },
+    approachServices: {
+      type: [
+        {
+          service: { type: String, default: "" },
+          label: { type: String, default: "" },
+          reason: { type: String, default: "" },
+          evidence: { type: String, default: "" },
+        },
+      ],
+      default: [],
+    },
     emailVerification: {
       syntax: { type: Boolean, default: false },
       domain: { type: Boolean, default: false },

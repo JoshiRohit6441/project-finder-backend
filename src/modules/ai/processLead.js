@@ -8,6 +8,7 @@ import { normalizeProject } from "../leads/projects.js";
 import { isCompleteEmail, verifyEmail } from "../verification/emailVerify.js";
 import { decidePitch, verifyLead } from "./gemini.js";
 import { snapshotWebsite } from "./websiteSnapshot.js";
+import { suggestApproaches, pitchFromApproaches } from "./suggestApproaches.js";
 import { upsertLeadVector } from "./qdrantStore.js";
 import { enqueueJob, publishEvent } from "../../queues/streams.js";
 import { publishLive } from "../../live/publish.js";
@@ -80,46 +81,15 @@ function isRateLimited(error) {
 }
 
 function fallbackPitch(leadLike, snapshot) {
-  const category = String(leadLike.category || "this business");
-  const hasSite = Boolean(leadLike.hasWebsite || leadLike.website);
-  const bookingType = /clinic|dental|dentist|salon|gym|spa|restaurant/i.test(category);
-  const hasBooking = Boolean(snapshot?.hasBooking);
-  if (hasSite && bookingType && snapshot && !hasBooking) {
-    return {
-      service: "booking_system",
-      label: "Online booking",
-      stack: "WordPress",
-      angle: `${leadLike.businessName} has a site but no clear online booking. Approach them with a booking flow on the existing site.`,
-      talkingPoints: [
-        "Add online booking on the existing site",
-        "Cut phone-tag for appointments",
-        "Keep the current look and add a simple booking flow",
-      ],
-    };
-  }
-  if (hasSite) {
-    return {
-      service: "website_upgrade",
-      label: "Website upgrade",
-      stack: "WordPress",
-      angle: `${leadLike.businessName} already has a website${hasBooking ? " with online booking" : ""}. Approach them with a focused upgrade, not a new booking product.`,
-      talkingPoints: [
-        "Improve mobile layout and how services are explained",
-        "Make contact and location easier to find",
-        "Keep the current site and upgrade the weak parts",
-      ],
-    };
-  }
+  return pitchFromApproaches(suggestApproaches(leadLike, snapshot), leadLike);
+}
+
+function withApproaches(pitch, leadLike, snapshot) {
+  const heuristic = suggestApproaches(leadLike, snapshot);
+  const approaches = pitch?.approaches?.length ? pitch.approaches : heuristic;
   return {
-    service: "new_website",
-    label: "New website",
-    stack: "WordPress",
-    angle: `${leadLike.businessName} does not have a clear website. Approach them with a simple professional site for ${category}.`,
-    talkingPoints: [
-      "A clear site with services, location, and contact",
-      "Mobile-friendly pages that look trustworthy",
-      "A contact path so enquiries do not get lost",
-    ],
+    ...pitch,
+    approaches,
   };
 }
 
@@ -133,15 +103,15 @@ async function applyPitch(leadLike) {
     try {
       const pitch = await decidePitch(leadLike, snapshot);
       if (pitch.service === "booking_system" && snapshot?.hasBooking) {
-        return { pitch: fallbackPitch(leadLike, snapshot), snapshot };
+        return { pitch: withApproaches(fallbackPitch(leadLike, snapshot), leadLike, snapshot), snapshot };
       }
-      return { pitch, snapshot };
+      return { pitch: withApproaches(pitch, leadLike, snapshot), snapshot };
     } catch (error) {
       logger.warn({ err: error }, "pitch decision failed");
       if (isRateLimited(error)) aiCooldownUntil = Date.now() + 15 * 60 * 1000;
     }
   }
-  return { pitch: fallbackPitch(leadLike, snapshot), snapshot };
+  return { pitch: withApproaches(fallbackPitch(leadLike, snapshot), leadLike, snapshot), snapshot };
 }
 
 async function reviewCandidate(raw) {
@@ -217,8 +187,7 @@ async function processCandidateLead(payload) {
     return;
   }
 
-  const campaign = await Campaign.findById(campaignId).select("project").lean();
-  const project = normalizeProject(campaign?.project || reviewed.pitch?.service, PROJECT_TYPES.NEW_WEBSITE);
+  const project = normalizeProject(reviewed.pitch?.service, PROJECT_TYPES.OTHER);
 
   try {
     const lead = await Lead.create({
@@ -250,6 +219,8 @@ async function processCandidateLead(payload) {
       aiAnalysis: reviewed.analysis,
       emailVerification: reviewed.emailVerification,
       pitch: reviewed.pitch,
+      approachServices: reviewed.pitch?.approaches || [],
+      socials: { ...(raw.socials || {}), ...(reviewed.websiteAudit?.socials || {}) },
       websiteAudit: reviewed.websiteAudit || {},
       timezone: reviewed.timezone || "",
     });
@@ -292,9 +263,11 @@ async function processCreatedLead(leadId) {
   lead.aiAnalysis = reviewed.analysis;
   lead.emailVerification = reviewed.emailVerification;
   lead.pitch = reviewed.pitch;
+  lead.approachServices = reviewed.pitch?.approaches || [];
+  lead.socials = { ...(lead.socials || {}), ...(reviewed.websiteAudit?.socials || {}) };
   lead.websiteAudit = reviewed.websiteAudit || {};
   if (!lead.timezone) lead.timezone = reviewed.timezone || "";
-  if (!lead.project) lead.project = normalizeProject(reviewed.pitch?.service, PROJECT_TYPES.NEW_WEBSITE);
+  lead.project = normalizeProject(reviewed.pitch?.service, lead.project || PROJECT_TYPES.OTHER);
   if (!lead.source) lead.source = LEAD_SOURCE.SCRAPE;
   await lead.save();
   if (reviewed.review) await queueQualifyReview(lead, reviewed);
@@ -344,9 +317,13 @@ async function processMissingPitches() {
   }).limit(8);
   for (const lead of pending) {
     try {
-      const { pitch } = await applyPitch(lead.toObject());
+      const { pitch, snapshot } = await applyPitch(lead.toObject());
       if (!pitch?.service) continue;
       lead.pitch = pitch;
+      lead.approachServices = pitch.approaches || [];
+      lead.project = normalizeProject(pitch.service, lead.project || PROJECT_TYPES.OTHER);
+      if (snapshot?.socials) lead.socials = { ...(lead.socials || {}), ...snapshot.socials };
+      if (snapshot) lead.websiteAudit = snapshot;
       await lead.save();
       await publishLive("leads", { leadId: String(lead._id) });
     } catch (error) {

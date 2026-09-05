@@ -1,9 +1,31 @@
 const BOOKING_RE =
   /book\s*(now|online|appointment|a visit)|request\s+(an\s+)?appointment|schedule\s+(a\s+)?(visit|appointment)|online\s+booking|patient\s+portal|\/(book|booking|appointments?|schedule)\b|calendly|zocdoc|opentable|resy|mindbody|setmore|simplybook|acuity|square\.site|booked\.in|doctorsite|modento|nexhealth|localmed|weave|solutionreach|dentrix|opendental|patientfi/;
 
+const SOCIAL_PATTERNS = {
+  facebook: /https?:\/\/(?:www\.)?(?:facebook|fb)\.com\/[A-Za-z0-9_.%-]+/i,
+  instagram: /https?:\/\/(?:www\.)?instagram\.com\/[A-Za-z0-9_.%-]+/i,
+  linkedin: /https?:\/\/(?:www\.)?linkedin\.com\/(?:company|in)\/[A-Za-z0-9_.%-]+/i,
+  youtube: /https?:\/\/(?:www\.)?(?:youtube\.com\/(?:channel|c|user|@)|youtu\.be\/)[A-Za-z0-9_.%-]+/i,
+  tiktok: /https?:\/\/(?:www\.)?tiktok\.com\/@[A-Za-z0-9_.%-]+/i,
+  x: /https?:\/\/(?:www\.)?(?:twitter|x)\.com\/[A-Za-z0-9_]+/i,
+};
+
 function detectBooking(html) {
-  const text = String(html || "").toLowerCase();
-  return BOOKING_RE.test(text);
+  return BOOKING_RE.test(String(html || "").toLowerCase());
+}
+
+function firstMatch(html, re) {
+  const match = String(html || "").match(re);
+  return match ? match[0].split(/["'\s>]/)[0] : "";
+}
+
+function extractSocials(html) {
+  const socials = {};
+  for (const [name, re] of Object.entries(SOCIAL_PATTERNS)) {
+    const href = firstMatch(html, re);
+    if (href) socials[name] = href;
+  }
+  return socials;
 }
 
 function analyzeHtml(html, href, ttfbMs, pageBytes) {
@@ -23,7 +45,33 @@ function analyzeHtml(html, href, ttfbMs, pageBytes) {
   const hasViewport = /<meta[^>]+name=["']viewport["']/i.test(text);
   const hasResponsiveCss = /@media\s*\(\s*max-width/i.test(text);
   const ssl = String(href || "").startsWith("https://");
+  const images = text.match(/<img\b[^>]*>/gi) || [];
+  const imagesMissingAlt = images.filter((tag) => !/alt\s*=\s*["'][^"']+/i.test(tag)).length;
+  const socials = extractSocials(text);
+  const socialCount = Object.keys(socials).length;
+  const hasGoogleAnalytics = /gtag\(|googletagmanager\.com|google-analytics\.com|GA_MEASUREMENT_ID/i.test(text);
+  const hasGoogleAds = /gtag\/js\?id=AW-|googleadservices\.com|google_conversion/i.test(text);
+  const hasMetaPixel = /connect\.facebook\.net|fbq\s*\(|facebook\.com\/tr\?id=/i.test(text);
+  const hasTitle = Boolean(title.trim());
+  const hasMetaDescription = Boolean(description.trim());
+  const hasH1 = /<h1\b/i.test(text);
+  const hasCanonical = /rel=["']canonical["']/i.test(text);
+  const hasOpenGraph = /property=["']og:/i.test(text);
+  const hasJsonLd = /application\/ld\+json/i.test(text);
+  const hasRobotsNoindex = /name=["']robots["'][^>]+noindex|content=["'][^"']*noindex/i.test(text);
+  const contactVisible = /mailto:|tel:|whatsapp|contact us|get in touch/i.test(text);
   const speedScore = scoreFromSignals({ ttfbMs, pageBytes, ssl, hasViewport });
+  let seoScore = 100;
+  if (!hasTitle) seoScore -= 20;
+  if (!hasMetaDescription) seoScore -= 15;
+  if (!hasH1) seoScore -= 10;
+  if (!hasCanonical) seoScore -= 8;
+  if (!hasOpenGraph) seoScore -= 8;
+  if (!ssl) seoScore -= 15;
+  if (!hasViewport) seoScore -= 10;
+  if (hasRobotsNoindex) seoScore -= 20;
+  if (imagesMissingAlt > 2) seoScore -= 8;
+  seoScore = Math.max(10, Math.min(100, seoScore));
   return {
     title: title.replace(/\s+/g, " ").trim().slice(0, 160),
     description: description.replace(/\s+/g, " ").trim().slice(0, 240),
@@ -35,6 +83,22 @@ function analyzeHtml(html, href, ttfbMs, pageBytes) {
     ttfbMs: Number(ttfbMs) || 0,
     pageBytes: Number(pageBytes) || text.length,
     speedScore,
+    seoScore,
+    hasTitle,
+    hasMetaDescription,
+    hasH1,
+    hasCanonical,
+    hasOpenGraph,
+    hasJsonLd,
+    hasRobotsNoindex,
+    images: images.length,
+    imagesMissingAlt,
+    contactVisible,
+    socials,
+    socialCount,
+    hasGoogleAnalytics,
+    hasGoogleAds,
+    hasMetaPixel,
   };
 }
 
@@ -67,7 +131,7 @@ async function fetchPageSpeed(website, apiKey) {
     return {
       pagespeed: perf || null,
       seoScore: seo || null,
-      mobileFriendly: lighthouse.audits?.["viewport"]?.score === 1,
+      mobileFriendly: lighthouse.audits?.viewport?.score === 1,
     };
   } catch {
     return null;
@@ -93,9 +157,7 @@ async function snapshotWebsite(website, options = {}) {
       },
     });
     const ttfbMs = Date.now() - started;
-    if (!response.ok) {
-      return analyzeHtml("", href, ttfbMs, 0);
-    }
+    if (!response.ok) return analyzeHtml("", href, ttfbMs, 0);
     const html = await response.text();
     const snapshot = analyzeHtml(html, response.url || href, ttfbMs, Buffer.byteLength(html));
     if (options.pagespeedKey) {
@@ -114,4 +176,4 @@ async function snapshotWebsite(website, options = {}) {
   }
 }
 
-export { snapshotWebsite, analyzeHtml, scoreFromSignals, detectBooking };
+export { snapshotWebsite, analyzeHtml, scoreFromSignals, detectBooking, extractSocials };
